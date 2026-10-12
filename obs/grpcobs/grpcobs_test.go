@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -47,6 +49,19 @@ func (s *svc) Check(ctx context.Context, r *grpc_health_v1.HealthCheckRequest) (
 		// The handler reports; the interceptor must not report the same error again.
 		return nil, report.Error( //nolint:wrapcheck // the handler returns the reported error as is
 			ctx, errs.Internal(errors.New("dial 10.0.0.7: password=hunter2")))
+	case "exists", "exists-wrapped", "exists-reported":
+		st, err := status.New(codes.AlreadyExists, "subnet sub-1 already exists").
+			WithDetails(&errdetails.ErrorInfo{Reason: "ALREADY_EXISTS", Domain: "network.vws"})
+		if err != nil {
+			panic(err)
+		}
+		switch r.GetService() {
+		case "exists-wrapped":
+			return nil, fmt.Errorf("create subnet: %w", st.Err())
+		case "exists-reported":
+			return nil, errs.Reported(fmt.Errorf("create subnet: %w", st.Err()))
+		}
+		return nil, st.Err() //nolint:wrapcheck // the handler returns a status as is
 	case "plain":
 		return nil, errors.New("raw failure password=hunter2")
 	}
@@ -192,5 +207,41 @@ func TestOneReportPerFailureAndNoInternalDetail(t *testing.T) {
 	}
 	if strings.Count(h.logs.String(), "error reported") != 2 {
 		t.Errorf("two failures must write two log lines: %s", h.logs.String())
+	}
+}
+
+// vws-lib#13: a handler's gRPC status reaches the client unchanged and is not reported.
+func TestHandlerStatusPassesThroughUnreported(t *testing.T) {
+	h := start(t)
+	for _, name := range []string{"exists", "exists-wrapped", "exists-reported"} {
+		err := h.check(t, name)
+		st, _ := status.FromError(err)
+		if st.Code() != codes.AlreadyExists || st.Message() != "subnet sub-1 already exists" {
+			t.Errorf("%s: client saw %v %q", name, st.Code(), st.Message())
+		}
+		if strings.Count(err.Error(), "rpc error") != 1 {
+			t.Errorf("%s: message double-wrapped: %q", name, err.Error())
+		}
+		var info *errdetails.ErrorInfo
+		for _, d := range st.Details() {
+			if i, ok := d.(*errdetails.ErrorInfo); ok {
+				info = i
+			}
+		}
+		if info == nil || info.GetReason() != "ALREADY_EXISTS" {
+			t.Errorf("%s: ErrorInfo lost: %v", name, st.Details())
+		}
+		if got := errs.CodeOf(errs.FromGRPC(err)); got != errs.CodeAlreadyExists {
+			t.Errorf("%s: CodeOf on the client = %v", name, got)
+		}
+	}
+	if n := h.sum(t, obs.MetricErrors, nil); n != 0 {
+		t.Errorf("a caller error carried as a status must not be reported: %d", n)
+	}
+	if strings.Contains(h.logs.String(), "error reported") {
+		t.Errorf("no error report expected: %s", h.logs.String())
+	}
+	if n := h.sum(t, obs.MetricRPCServerRequests, map[string]string{"grpc_code": "AlreadyExists"}); n != 3 {
+		t.Errorf("AlreadyExists count %d", n)
 	}
 }
