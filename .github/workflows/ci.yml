@@ -42,3 +42,15 @@ jobs:
         run: scripts/check-imports.sh selftest
       - name: no dependency on vws-proto or a service repo
         run: scripts/check-imports.sh
+
+  consumer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.0"
+      - name: check-consumer.sh fails when the lib breaks
+        run: scripts/check-consumer.sh selftest
+      - name: sample consumer module builds against the lib
+        run: scripts/check-consumer.sh
