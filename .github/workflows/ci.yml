@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.0"
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: guard-agents.sh rejects bad inputs
+        run: scripts/guard-agents.sh selftest
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.0"
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
