@@ -3,6 +3,8 @@ package errs
 import (
 	"errors"
 	"fmt"
+
+	"google.golang.org/grpc/codes"
 )
 
 // E is the error every layer returns. Message is for the caller. The cause is for logs and
@@ -72,11 +74,17 @@ func (e *E) Is(target error) bool {
 // Sentinel returns a value for errors.Is that matches any E with this code.
 func Sentinel(code Code) error { return &E{Code: code} }
 
-// CodeOf returns the code of the first E in the chain, or CodeUnspecified.
+// CodeOf returns the code of the first E in the chain; without an E, the Code of a gRPC status
+// in the chain (the FromGRPC table); otherwise CodeUnspecified.
 func CodeOf(err error) Code {
 	var e *E
 	if errors.As(err, &e) {
 		return e.Code
+	}
+	// A gRPC status without an E (a handler returning status.Error) keeps its code, so a
+	// caller error such as AlreadyExists is not taken for a server fault (vws-lib#13).
+	if st, ok := statusOf(err); ok && st.Code() != codes.Unknown {
+		return codeFromGRPC(st.Code())
 	}
 	return CodeUnspecified
 }
