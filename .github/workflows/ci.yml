@@ -54,3 +54,10 @@ jobs:
         run: scripts/check-consumer.sh selftest
       - name: sample consumer module builds against the lib
         run: scripts/check-consumer.sh
+
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: vendor-lib.sh rejects edited, moved, and forged copies
+        run: scripts/vendor-lib.sh selftest

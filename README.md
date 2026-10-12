@@ -62,11 +62,12 @@ The full table and defaults are in section 4 of the design issue. Secrets (heade
 
 Same way as vws-proto: vendor a copy of a tagged version and point `replace` at it.
 
-1. Copy the tree of the tag into `third_party/vws-lib` and record the tag and commit in the consumer README.
+1. Copy `scripts/vendor-lib.sh` into the consumer repo and run `scripts/vendor-lib.sh vendor v0.1.0` from its root. It copies the tag's tree into `third_party/vws-lib` and writes `third_party/vws-lib/VENDOR` (ref, commit, sha256 of the files). A ref is a tag or a full 40-character commit id.
 2. In `go.mod`: `require github.com/popododo0720/vws-lib v0.0.0` and `replace github.com/popododo0720/vws-lib => ./third_party/vws-lib`.
-3. Do not edit the vendored copy. Change it here, tag, and copy again.
+3. Run `scripts/vendor-lib.sh check` in the consumer's CI. It fails when a vendored file was edited, added, or removed, and when the tag now points to another commit. The source is `VWS_LIB_REPO` (default the GitHub URL; the repo is private, so CI needs read access). `VWS_LIB_OFFLINE=1` checks only the recorded hash.
+4. Do not edit the vendored copy. Change it here, tag, and vendor again.
 
-When this repository is public, drop the `replace` and require the tag. There is no tag yet. How a tag is published, and who publishes it, is in `docs/release.md`. A vendoring script (`scripts/vendor-lib.sh`) and its `check` are part of vws-deploy#44. They do not exist yet.
+When this repository is public, drop the `replace` and require the tag. There is no tag yet. How a tag is published, and who publishes it, is in `docs/release.md`.
 
 ## Develop
 
