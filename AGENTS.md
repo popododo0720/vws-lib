@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | L1 | PR은 main을 대상으로 하고 본문에 `Closes #N`이 있으며, main에 PR 없이 들어온 커밋은 CI가 알린다. AGENTS.md는 Insider-risk guardrails 1~7을 갖는다 | `.github/workflows/repo-guard.yml` `.github/workflows/direct-push-watch.yml` `scripts/guard-agents.sh` | `scripts/guard-agents.sh agents` |
 | L2 | Cursor 클라우드 에이전트를 쓰지 않는다 | `AGENTS.md` | 판단 |
-| L3 | 이 모듈은 vws-proto와 서비스 레포(compute, storage, network, console-api)를 import하지 않는다. 의존 방향은 서비스 → lib 한쪽이다 | `go.mod` | 판단 (`go list -deps` 금지 목록 검사는 #44에서 추가) |
+| L3 | 이 모듈은 vws-proto와 서비스 레포(compute, storage, network, console-api)를 import하지 않는다. 의존 방향은 서비스 → lib 한쪽이다 | `go.mod` `scripts/check-imports.sh` | `scripts/check-imports.sh` (CI의 `imports` 작업) |
 | L4 | 코드는 gofmt, goimports를 지키고 `.golangci.yml`의 린트를 통과한다. `std-error-handling` 프리셋은 쓰지 않는다 | `.golangci.yml` | CI의 `golangci-lint` v2.14.0 |
 | L5 | `go vet ./...`와 `go test -race ./...`가 통과한다 | `.github/workflows/ci.yml` | CI |
 | L6 | 가드 파일 3개(`repo-guard.yml`, `direct-push-watch.yml`, `scripts/guard-agents.sh`)는 vws-deploy main과 바이트 단위로 같다. 이 저장소에서 고치지 않는다 | - | 판단 (`sha256sum`으로 비교) |
