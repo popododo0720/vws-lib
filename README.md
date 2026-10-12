@@ -1,0 +1,49 @@
+# vws-lib
+
+Shared Go library for VWS services: observability (OpenTelemetry) and errors. VWS is not affiliated with Amazon or AWS.
+
+Status: first structure only. The packages compile and are empty. The design is [vws-deploy#42](https://github.com/popododo0720/vws-deploy/issues/42) and the implementation work is [vws-deploy#44](https://github.com/popododo0720/vws-deploy/issues/44).
+
+## Packages
+
+| Package | Purpose |
+| --- | --- |
+| `obs` | `Setup` for logs, traces, and metrics over OTLP, plus gRPC and HTTP instrumentation, health endpoints, and error reporting (design sections 3 to 7). |
+| `errs` | Error codes and kinds shared by services, with the gRPC and AWS code mappings. It reuses the `resource.Code` and `resource.Kind` set of vws-console-api rather than adding a new taxonomy. |
+
+This module never imports vws-proto or any service repository. The dependency points one way: service to lib.
+
+## Environment variables
+
+Services read only these. Standard OpenTelemetry and Sentry names come first. `VWS_*` names exist only where no standard name does.
+
+| Variable | Meaning |
+| --- | --- |
+| `OTEL_*` (`OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_TRACES_SAMPLER`, `OTEL_RESOURCE_ATTRIBUTES`, ...) | Standard OpenTelemetry SDK settings. An empty `OTEL_EXPORTER_OTLP_ENDPOINT` means nothing is exported. |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, `SENTRY_SAMPLE_RATE` | Sentry is on only when `SENTRY_DSN` is set. |
+| `VWS_LOG_LEVEL` | `debug`, `info`, `warn`, or `error`. Default `info`. |
+| `VWS_LOG_FORMAT` | `json` (default) or `text` for local development. |
+| `VWS_HEALTH_ADDR` | Address for `/healthz` and `/readyz`. Empty means off. |
+
+The full table and defaults are in section 4 of the design issue. Secrets (headers, DSN) are injected from Secrets, never written in values files.
+
+## Use it from a service repo
+
+Same way as vws-proto: vendor a copy of a tagged version and point `replace` at it.
+
+1. Copy the tree of the tag into `third_party/vws-lib` and record the tag and commit in the consumer README.
+2. In `go.mod`: `require github.com/popododo0720/vws-lib v0.0.0` and `replace github.com/popododo0720/vws-lib => ./third_party/vws-lib`.
+3. Do not edit the vendored copy. Change it here, tag, and copy again.
+
+When this repository is public, drop the `replace` and require the tag. There is no tag yet. A vendoring script (`scripts/vendor-lib.sh`) and its `check` are part of vws-deploy#44. They do not exist yet.
+
+## Develop
+
+```sh
+go vet ./...
+go test -race ./...
+golangci-lint run ./...        # v2.14.0, config in .golangci.yml
+scripts/guard-agents.sh selftest
+```
+
+Contributor rules, branch and PR rules, and the insider-risk guardrails are in `AGENTS.md`. License: Apache-2.0.
