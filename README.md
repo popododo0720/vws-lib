@@ -2,16 +2,47 @@
 
 Shared Go library for VWS services: observability (OpenTelemetry) and errors. VWS is not affiliated with Amazon or AWS.
 
-Status: first structure only. The packages compile and are empty. The design is [vws-deploy#42](https://github.com/popododo0720/vws-deploy/issues/42) and the implementation work is [vws-deploy#44](https://github.com/popododo0720/vws-deploy/issues/44).
+Status: `obs` and `errs` are implemented (vws-deploy#44 item a). Not yet in: the Prometheus pull reader, the `go list -deps` check, the sample consumer build, `scripts/vendor-lib.sh`, and the `v0.1.0` tag. The design is [vws-deploy#42](https://github.com/popododo0720/vws-deploy/issues/42) and the implementation work is [vws-deploy#44](https://github.com/popododo0720/vws-deploy/issues/44).
 
 ## Packages
 
 | Package | Purpose |
 | --- | --- |
-| `obs` | `Setup` for logs, traces, and metrics over OTLP, plus gRPC and HTTP instrumentation, health endpoints, and error reporting (design sections 3 to 7). |
+| `obs` | `Setup`, `Config` and its defaults (`defaults.go`), names (`names.go`), the JSON logger with `trace_id`, `span_id`, `request_id`, and the `vws.*` metrics (`obs.M()`). Logs, traces, and metrics go over OTLP only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. |
+| `obs/report` | `report.Error` and `report.Panic`: span error, log line, `vws.errors`, and Sentry when `SENTRY_DSN` is set. An error is reported once (`errs.Reported`). The only package that imports sentry-go. |
+| `obs/grpcobs`, `obs/httpobs` | Server and client instrumentation, panic recovery, request id, `vws.rpc.*` and `vws.http.*` metrics. |
+| `obs/health` | `/healthz` (checks nothing), `/readyz` (registered checks, fails after `NotReady` or SIGTERM). Telemetry backends cannot be registered. |
 | `errs` | Error codes and kinds shared by services, with the gRPC and AWS code mappings. It reuses the `resource.Code` and `resource.Kind` set of vws-console-api rather than adding a new taxonomy. |
 
 This module never imports vws-proto or any service repository. The dependency points one way: service to lib.
+
+## Use in a service
+
+```go
+shutdown, err := obs.Setup(ctx, obs.ForService("compute"))
+if err != nil { return err }
+defer shutdown(context.WithoutCancel(ctx)) // flushes within Config.ShutdownTimeout
+
+srv := grpc.NewServer(grpcobs.ServerOptions("compute")...)
+health.Default().Register("store", func(ctx context.Context) error { return storeReady() })
+return report.Error(ctx, err) // once; outer layers skip an error already reported
+```
+
+Services never import sentry-go. A `depguard` rule keeps it that way in the consumer; copy this from `.golangci.yml`:
+
+```yaml
+linters:
+  settings:
+    depguard:
+      rules:
+        no-sentry-direct:
+          files: [$all]
+          deny:
+            - pkg: github.com/getsentry/sentry-go
+              desc: use vws-lib/obs/report
+```
+
+Differences from the design text: `obs/log`, `obs/trace`, and `obs/metric` are files of package `obs`, not packages. The `vws.rpc.*` and `vws.http.*` metrics come from vws-lib's own instruments, not from the instrumentation libraries' default metrics, so their names do not move with those libraries. `OTEL_*_EXPORTER` accepts `otlp` and `none` only.
 
 ## Environment variables
 
