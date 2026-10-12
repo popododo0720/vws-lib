@@ -44,15 +44,38 @@ func GRPCStatus(err error) *status.Status {
 	}
 	var e *E
 	if !errors.As(err, &e) {
-		if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
-			return status.New(st.Code(), st.Message())
+		// A status in the chain passes through as it is: its own message (not the wrapped
+		// "rpc error: ... desc = rpc error: ..." text) and its details (vws-lib#13).
+		if st, ok := statusOf(err); ok && st.Code() != codes.Unknown && st.Code() != codes.Internal {
+			return st
 		}
 		return status.New(codes.Internal, internalMessage)
 	}
 	if e.Code == CodeInternal || e.Code == CodeUnspecified || GRPCCode(e.Code) == codes.Internal {
 		return status.New(codes.Internal, internalMessage)
 	}
+	// An E made by FromGRPC from a peer's status keeps that status and its details.
+	if st, ok := statusOf(e.Unwrap()); ok && st.Code() == GRPCCode(e.Code) && st.Message() == e.Message {
+		return st
+	}
 	return status.New(GRPCCode(e.Code), e.Message)
+}
+
+// statusOf returns the gRPC status of the first error in the chain that carries one
+// (a status.Error, possibly wrapped). A nil chain or an OK status gives false.
+func statusOf(err error) (*status.Status, bool) {
+	if err == nil {
+		return nil, false
+	}
+	var g interface{ GRPCStatus() *status.Status }
+	if !errors.As(err, &g) {
+		return nil, false
+	}
+	st := g.GRPCStatus()
+	if st == nil || st.Code() == codes.OK {
+		return nil, false
+	}
+	return st, true
 }
 
 // FromGRPC converts a client-side error back to an E. A status that carries no code maps
