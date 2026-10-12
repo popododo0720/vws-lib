@@ -33,6 +33,9 @@ selftest() {
   rm -rf "$tmp/errs"
   ! (build "$tmp") >/dev/null 2>&1 || { echo "selftest: the build passed with package errs removed" >&2; return 1; }
   cp -r "$root"/errs "$tmp"/errs
+  sed -i 's/^func New(/func NewRenamed(/' "$tmp/errs/error.go"
+  ! (build "$tmp") >/dev/null 2>&1 || { echo "selftest: the build passed with errs.New renamed" >&2; return 1; }
+  cp "$root"/errs/error.go "$tmp"/errs/error.go
   printf '\n// stray\nfunc broken( {\n' >> "$tmp/errs/doc.go"
   ! (build "$tmp") >/dev/null 2>&1 || { echo "selftest: the build passed with a syntax error in the lib" >&2; return 1; }
   echo "check-consumer selftest ok"
