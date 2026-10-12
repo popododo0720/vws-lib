@@ -243,3 +243,35 @@ func (m *Metrics) NewCounter(name, description string) (Counter, error) {
 func (c Counter) Add(ctx context.Context, n int64, labels ...string) {
 	c.c.Add(ctx, n, Attrs(labels...))
 }
+
+// Histogram is a service-defined histogram. Its name must start with "vws." and its labels must be
+// in the allowlist (Attrs panics otherwise). Use it for a service's own distributions instead of
+// borrowing a built-in instrument such as the reconcile duration.
+type Histogram struct{ h metric.Float64Histogram }
+
+// NewHistogram creates a histogram on the process meter. unit is the UCUM unit of the recorded
+// values ("s" for seconds, "By" for bytes, "1" for a count); empty records no unit.
+func (m *Metrics) NewHistogram(name, description, unit string) (Histogram, error) {
+	if !strings.HasPrefix(name, MetricPrefix) {
+		return Histogram{}, fmt.Errorf("metric %q must start with %q", name, MetricPrefix)
+	}
+	opts := []metric.Float64HistogramOption{metric.WithDescription(description)}
+	if unit != "" {
+		opts = append(opts, metric.WithUnit(unit))
+	}
+	h, err := m.meter.Float64Histogram(name, opts...)
+	if err != nil {
+		return Histogram{}, fmt.Errorf("create histogram %s: %w", name, err)
+	}
+	return Histogram{h}, nil
+}
+
+// Record records v with labels given as key, value pairs.
+func (h Histogram) Record(ctx context.Context, v float64, labels ...string) {
+	h.h.Record(ctx, v, Attrs(labels...))
+}
+
+// RecordDuration records d in seconds; use it with a histogram created with unit "s".
+func (h Histogram) RecordDuration(ctx context.Context, d time.Duration, labels ...string) {
+	h.Record(ctx, d.Seconds(), labels...)
+}
