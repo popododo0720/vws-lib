@@ -1,0 +1,30 @@
+# Common insider-risk workflow for pull requests. Copy this file, direct-push-watch.yml and
+# scripts/guard-agents.sh as-is into another repo.
+# The repo is private on a free plan, so branch protection is unavailable. These checks replace it.
+# The push check lives in its own file so that a pull request run has no skipped check.
+name: repo-guard
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Base is the main branch
+        env:
+          GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_REF: ${{ github.base_ref }}
+        run: scripts/guard-agents.sh pr-base "$BASE_REF"
+      - name: Body closes an issue
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: scripts/guard-agents.sh pr-body
+      - name: AGENTS.md has the guardrails
+        run: scripts/guard-agents.sh agents

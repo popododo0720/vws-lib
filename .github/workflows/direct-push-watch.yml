@@ -1,0 +1,27 @@
+# Reports a commit that landed on main without a pull request, and a rewritten main history.
+# Detection after the fact, not a block. Copy this file, repo-guard.yml and scripts/guard-agents.sh
+# as-is into another repo. Change `branches` if the default branch is not main.
+name: direct-push-watch
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  direct-push-watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit on main came from a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: scripts/guard-agents.sh push-watch "$BEFORE" "$AFTER"
