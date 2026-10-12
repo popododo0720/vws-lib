@@ -35,7 +35,7 @@ Same way as vws-proto: vendor a copy of a tagged version and point `replace` at 
 2. In `go.mod`: `require github.com/popododo0720/vws-lib v0.0.0` and `replace github.com/popododo0720/vws-lib => ./third_party/vws-lib`.
 3. Do not edit the vendored copy. Change it here, tag, and copy again.
 
-When this repository is public, drop the `replace` and require the tag. There is no tag yet. A vendoring script (`scripts/vendor-lib.sh`) and its `check` are part of vws-deploy#44. They do not exist yet.
+When this repository is public, drop the `replace` and require the tag. There is no tag yet. How a tag is published, and who publishes it, is in `docs/release.md`. A vendoring script (`scripts/vendor-lib.sh`) and its `check` are part of vws-deploy#44. They do not exist yet.
 
 ## Develop
 
