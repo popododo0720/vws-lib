@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -496,3 +497,46 @@ func TestBlockedCollectorDoesNotSlowTheRequestPath(t *testing.T) {
 
 // oddArgs hides the length from the static check that the test provokes on purpose.
 func oddArgs() []string { return []string{"service"} }
+
+// A 30 ms observation lands in (0.025, 0.05], not in the SDK default first bucket le="5".
+func TestSecondsHistogramsUseSecondsBuckets(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	setup(t, map[string]string{}, obs.WithOverride(func(c *obs.Config) { c.MetricReaders = []sdkmetric.Reader{reader} }))
+	ctx := t.Context()
+	custom, err := obs.M().NewHistogram("vws.test.wait", "wait time", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom.RecordDuration(ctx, 30*time.Millisecond)
+	obs.M().RPCServer(ctx, "compute", "/vws.compute.v1.InstanceService/GetInstance", "OK", 30*time.Millisecond)
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, sm := range rm.ScopeMetrics {
+		for _, mm := range sm.Metrics {
+			if mm.Name != "vws.test.wait" && mm.Name != obs.MetricRPCServerDuration {
+				continue
+			}
+			d, ok := mm.Data.(metricdata.Histogram[float64])
+			if !ok || len(d.DataPoints) != 1 {
+				t.Fatalf("%s is %T with %d points, want one float64 histogram point", mm.Name, mm.Data, len(d.DataPoints))
+			}
+			dp := d.DataPoints[0]
+			if !slices.Equal(dp.Bounds, obs.SecondsBuckets) {
+				t.Errorf("%s bounds = %v, want %v", mm.Name, dp.Bounds, obs.SecondsBuckets)
+				continue
+			}
+			want := make([]uint64, len(dp.Bounds)+1)
+			want[slices.Index(dp.Bounds, 0.05)] = 1
+			if !slices.Equal(dp.BucketCounts, want) {
+				t.Errorf("%s buckets = %v, want the 30ms in le=0.05 only: %v", mm.Name, dp.BucketCounts, want)
+			}
+			checked++
+		}
+	}
+	if checked != 2 {
+		t.Fatalf("checked %d histograms, want 2", checked)
+	}
+}
