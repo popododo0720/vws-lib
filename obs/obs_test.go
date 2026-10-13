@@ -210,6 +210,11 @@ func TestMetricsNamesAndLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	custom.Add(ctx, 2, obs.LabelOutcome, "ok")
+	hist, err := m.NewHistogram("vws.custom.latency", "latency", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hist.RecordDuration(ctx, 30*time.Millisecond, obs.LabelOutcome, "ok")
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &rm); err != nil {
@@ -254,7 +259,7 @@ func TestMetricsNamesAndLabels(t *testing.T) {
 		obs.MetricHTTPServerRequests, obs.MetricHTTPServerDuration, obs.MetricAWSErrors, obs.MetricErrors,
 		obs.MetricPanics, obs.MetricReconcileTotal, obs.MetricReconcileDuration, obs.MetricReconcileErrors,
 		obs.MetricQueueDepth, obs.MetricQueueOldestAge, obs.MetricStoreConflicts, obs.MetricAuditEvents,
-		obs.MetricBuildInfo, "vws.custom.things",
+		obs.MetricBuildInfo, "vws.custom.things", "vws.custom.latency",
 	} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("metric %s was not exported", name)
@@ -282,6 +287,10 @@ func TestForbiddenLabelPanics(t *testing.T) {
 		"resource_id": func() { obs.Attrs("resource_id", "vol-1") },
 		"odd":         func() { obs.Attrs(oddArgs()...) },
 		"counter":     func() { c, _ := obs.M().NewCounter("vws.x", ""); c.Add(context.Background(), 1, "request_id", "r") }, //nolint:errcheck // name is valid
+		"histogram": func() {
+			h, _ := obs.M().NewHistogram("vws.y", "", "s") //nolint:errcheck // name is valid
+			h.Record(context.Background(), 1, "request_id", "r")
+		},
 	} {
 		func() {
 			defer func() {
@@ -294,6 +303,54 @@ func TestForbiddenLabelPanics(t *testing.T) {
 	}
 	if _, err := obs.M().NewCounter("custom.no_prefix", ""); err == nil {
 		t.Errorf("a metric name without the vws. prefix must be refused")
+	}
+	if _, err := obs.M().NewHistogram("custom.no_prefix", "", "s"); err == nil {
+		t.Errorf("a histogram name without the vws. prefix must be refused")
+	}
+}
+
+func TestNewHistogramRecordsValuesAndUnit(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	setup(t, map[string]string{}, obs.WithOverride(func(c *obs.Config) { c.MetricReaders = []sdkmetric.Reader{reader} }))
+	ctx := t.Context()
+	secs, err := obs.M().NewHistogram("vws.test.wait", "wait time", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	size, err := obs.M().NewHistogram("vws.test.size", "object size", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secs.RecordDuration(ctx, 250*time.Millisecond, obs.LabelOutcome, "ok")
+	secs.Record(ctx, 0.75, obs.LabelOutcome, "ok")
+	size.Record(ctx, 4096)
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatal(err)
+	}
+	type got struct {
+		unit       string
+		count      uint64
+		sum        float64
+		labelValue string
+	}
+	seen := map[string]got{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, mm := range sm.Metrics {
+			d, ok := mm.Data.(metricdata.Histogram[float64])
+			if !ok || len(d.DataPoints) != 1 {
+				continue
+			}
+			dp := d.DataPoints[0]
+			v, _ := dp.Attributes.Value(attribute.Key(obs.LabelOutcome))
+			seen[mm.Name] = got{mm.Unit, dp.Count, dp.Sum, v.AsString()}
+		}
+	}
+	if g := seen["vws.test.wait"]; g.unit != "s" || g.count != 2 || g.sum != 1.0 || g.labelValue != "ok" {
+		t.Errorf("vws.test.wait = %+v, want unit s, count 2, sum 1, outcome ok", g)
+	}
+	if g := seen["vws.test.size"]; g.unit != "" || g.count != 1 || g.sum != 4096 {
+		t.Errorf("vws.test.size = %+v, want no unit, count 1, sum 4096", g)
 	}
 }
 
