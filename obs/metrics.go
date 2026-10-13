@@ -30,6 +30,10 @@ func Attrs(kv ...string) metric.MeasurementOption {
 	return metric.WithAttributes(set...)
 }
 
+// SecondsBuckets are the bucket boundaries of every histogram in seconds. The SDK default
+// boundaries (0, 5, 10, 25, ... 10000) are meant for milliseconds and put every RPC in le="5".
+var SecondsBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+
 // Metrics holds the instruments of the metric table in the design. One value exists per
 // process; before Setup it records nothing.
 type Metrics struct {
@@ -85,7 +89,8 @@ func newMetrics(meter metric.Meter, service, version, commit string) (*Metrics, 
 		return c
 	}
 	hist := func(name, desc string) metric.Float64Histogram {
-		h, err := meter.Float64Histogram(name, metric.WithDescription(desc), metric.WithUnit("s"))
+		h, err := meter.Float64Histogram(name, metric.WithDescription(desc), metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(SecondsBuckets...))
 		if err != nil {
 			errs = append(errs, err.Error())
 		}
@@ -258,6 +263,9 @@ func (m *Metrics) NewHistogram(name, description, unit string) (Histogram, error
 	opts := []metric.Float64HistogramOption{metric.WithDescription(description)}
 	if unit != "" {
 		opts = append(opts, metric.WithUnit(unit))
+	}
+	if unit == "s" {
+		opts = append(opts, metric.WithExplicitBucketBoundaries(SecondsBuckets...))
 	}
 	h, err := m.meter.Float64Histogram(name, opts...)
 	if err != nil {
