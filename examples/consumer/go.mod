@@ -2,6 +2,8 @@ module example.com/vws-consumer
 
 go 1.26.0
 
+toolchain go1.26.9
+
 require github.com/popododo0720/vws-lib v0.0.0
 
 require (
