@@ -255,7 +255,8 @@ func (c Counter) Add(ctx context.Context, n int64, labels ...string) {
 type Histogram struct{ h metric.Float64Histogram }
 
 // NewHistogram creates a histogram on the process meter. unit is the UCUM unit of the recorded
-// values ("s" for seconds, "By" for bytes, "1" for a count); empty records no unit.
+// values ("s" for seconds, "By" for bytes, "1" for a count); empty records no unit. Unit "s" gets
+// SecondsBuckets as bucket boundaries.
 func (m *Metrics) NewHistogram(name, description, unit string) (Histogram, error) {
 	if !strings.HasPrefix(name, MetricPrefix) {
 		return Histogram{}, fmt.Errorf("metric %q must start with %q", name, MetricPrefix)
