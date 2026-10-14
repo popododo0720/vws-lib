@@ -67,6 +67,10 @@ Same way as vws-proto: vendor a copy of a tagged version and point `replace` at 
 3. Run `scripts/vendor-lib.sh check` in the consumer's CI. It fails when a vendored file was edited, added, or removed, and when the tag now points to another commit. The source is `VWS_LIB_REPO` (default the GitHub URL; the repo is private, so CI needs read access). `VWS_LIB_OFFLINE=1` checks only the recorded hash.
 4. Do not edit the vendored copy. Change it here, tag, and vendor again.
 
+### vws-proto
+
+Consumers vendor vws-proto the same way with `scripts/vendor-proto.sh` (copy it as-is): `scripts/vendor-proto.sh vendor v0.2.0` writes `third_party/vws-proto` and its `VENDOR`, and `scripts/vendor-proto.sh check` runs in the consumer's CI. Only a release tag `vX.Y.Z` at or above `v0.2.0` is accepted; a commit id, a branch (such as `feat/iam-v1`) or a pre-release fails, in `vendor` and in `check`. `check` also fails on an edited, added or removed file and on a moved tag. The source is `VWS_PROTO_REPO`; `VWS_PROTO_OFFLINE=1` checks the ref and the recorded hash only.
+
 When this repository is public, drop the `replace` and require the tag. There is no tag yet. How a tag is published, and who publishes it, is in `docs/release.md`.
 
 ## Develop
