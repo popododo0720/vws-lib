@@ -61,3 +61,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: vendor-lib.sh rejects edited, moved, and forged copies
         run: scripts/vendor-lib.sh selftest
+      - name: vendor-proto.sh rejects untagged, edited, moved and forged copies
+        run: scripts/vendor-proto.sh selftest
