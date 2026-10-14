@@ -22,7 +22,7 @@ jobs:
           GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
           BASE_REF: ${{ github.base_ref }}
         run: scripts/guard-agents.sh pr-base "$BASE_REF"
-      - name: Body closes an issue
+      - name: Body references an issue
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: scripts/guard-agents.sh pr-body

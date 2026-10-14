@@ -3,7 +3,7 @@
 #
 #   guard-agents.sh agents [FILE]           FILE (default AGENTS.md) has the guardrail section and items 1-7
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
-#   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Closes #N"
+#   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Part of #N" or "Closes #N" (N >= 1)
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
 #   guard-agents.sh selftest                run the guards on bad inputs; every one must fail
 #
@@ -44,14 +44,19 @@ cmd_pr_base() {
   [[ $base == "$MAIN" ]] || die "pr-base: this pull request targets '${base}', not '${MAIN}'. Do not stack pull requests."
 }
 
+# "Part of #N" or "Part of owner/repo#N", the same pattern as vws-deploy's guard-agents.sh.
+# Issue numbers start at 1: #0, #00 and #012 name no issue and do not count.
+PART_OF_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#[1-9][0-9]*'
+CLOSES_RE='(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+([A-Za-z0-9._/-]+)?#[1-9][0-9]*'
+
 cmd_pr_body() {
   local body=${PR_BODY:-}
   if [[ -n ${1:-} ]]; then
     [[ -f $1 ]] || die "pr-body: ${1} does not exist"
     body=$(cat "$1")
   fi
-  grep -q -i -E '(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+([A-Za-z0-9._/-]+)?#[0-9]+' <<<"$body" ||
-    die "pr-body: the pull request text needs 'Closes #N'"
+  grep -q -i -E "$PART_OF_RE|$CLOSES_RE" <<<"$body" ||
+    die "pr-body: the pull request text needs 'Part of #N' or 'Closes #N'"
 }
 
 pr_count() {
@@ -122,9 +127,16 @@ cmd_selftest() {
   expect_fail "empty base" cmd_pr_base ""
 
   expect_pass "Closes #N" env PR_BODY="Closes #12" bash "$0" pr-body
+  expect_pass "Part of #N" env PR_BODY="Part of #12" bash "$0" pr-body
+  expect_pass "Part of owner/repo#N" env PR_BODY="intro
+Part of acme/repo#7" bash "$0" pr-body
+  expect_fail "Part of #0" env PR_BODY="Part of #0" bash "$0" pr-body
+  expect_fail "Part of #012" env PR_BODY="Part of #012" bash "$0" pr-body
+  expect_fail "Closes #0" env PR_BODY="Closes #0" bash "$0" pr-body
+  expect_fail "Part of without number" env PR_BODY="Part of the plan" bash "$0" pr-body
   expect_pass "fixes owner/repo#N" env PR_BODY="intro
 fixes acme/repo#7" bash "$0" pr-body
-  expect_fail "no closing keyword" env PR_BODY="mentions #12 only" bash "$0" pr-body
+  expect_fail "no issue reference" env PR_BODY="mentions #12 only" bash "$0" pr-body
   expect_fail "empty body" env PR_BODY="" bash "$0" pr-body
   expect_fail "Closes without number" env PR_BODY="Closes the gap" bash "$0" pr-body
 
