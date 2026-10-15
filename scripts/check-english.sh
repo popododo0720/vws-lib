@@ -50,7 +50,9 @@ cmd_commits() {
   local base=${1:-} head=${2:-} sha
   [[ -n $base && -n $head ]] || die "english: commits needs BASE and HEAD"
   for sha in $(git rev-list --no-merges "${base}..${head}"); do
-    ! git log -1 --format=%B "$sha" | grep -v '^#' | has_hangul ||
+    # Every line counts: a stored message has no git comment lines, and a
+    # line starting with '#' (for example "#12 ...") is part of the message.
+    ! git log -1 --format=%B "$sha" | has_hangul ||
       die "english: commit ${sha:0:12} has Hangul; write the message in English"
   done
 }
@@ -89,6 +91,8 @@ cmd_selftest() {
   expect pass "English commits" in_dir "$tmp/r" commits HEAD~1 HEAD
   git -C "$tmp/r" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "ci: ${ko}"
   expect fail "a commit with Hangul" in_dir "$tmp/r" commits HEAD~2 HEAD
+  git -C "$tmp/r" -c user.name=t -c user.email=t@t commit -q --allow-empty --cleanup=verbatim -m "ci: y" -m "# ${ko}" -m "Part of #1"
+  expect fail "a commit with Hangul on a line starting with #" in_dir "$tmp/r" commits HEAD~1 HEAD
   echo "selftest passed"
 }
 
