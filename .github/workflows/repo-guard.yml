@@ -71,6 +71,13 @@ jobs:
           GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}
         run: |
           set -euo pipefail
+          # Bootstrap: the guard script comes from the base commit. Before this repo's main has a copy with the
+          # verify-gate command (the PR that adopts it), there is nothing trusted to run, so the gate reports that
+          # and passes. A PR cannot change the base copy, and every later PR runs the real gate.
+          if ! grep -q '^  verify-gate)' scripts/guard-agents.sh; then
+            echo "::warning::bootstrap: the base guard-agents.sh has no verify-gate command; the gate starts after this merges"
+            exit 0
+          fi
           text=$(mktemp)
           # One "@@comment-by: LOGIN" block per comment, from the API's author field. A body line that
           # imitates the marker is defanged so a comment cannot claim another author. Control characters are
