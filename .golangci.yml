@@ -1,24 +1,30 @@
+# Common baseline: vws-deploy lint/golangci-common.yml (vws-deploy#300). Existing lll findings
+# are fixed in a follow-up; until then new-from-merge-base holds changed lines to the baseline.
 version: "2"
 linters:
   default: none
   enable:
+    - bodyclose
+    - contextcheck
+    - depguard
     - errcheck
+    - errname
+    - errorlint
     - govet
     - ineffassign
+    - lll
     - misspell
+    - nilerr
+    - nilnil
+    - noctx
+    - sloglint
     - staticcheck
     - unused
-    - errorlint
-    - nilerr
     - wrapcheck
-    - errname
-    - nilnil
-    - contextcheck
-    - noctx
-    - bodyclose
-    - sloglint
-    - depguard
   settings:
+    lll:
+      line-length: 120
+      tab-width: 1
     misspell:
       locale: US
     errcheck:
@@ -60,11 +66,12 @@ linters:
       - builtin$
       - examples$
 issues:
+  new-from-merge-base: origin/main
   max-issues-per-linter: 0
   max-same-issues: 0
 formatters:
   enable:
-    - gofmt
+    - gofumpt
     - goimports
   settings:
     goimports:
