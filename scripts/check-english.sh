@@ -49,7 +49,8 @@ cmd_text() {
 cmd_commits() {
   local base=${1:-} head=${2:-} sha
   [[ -n $base && -n $head ]] || die "english: commits needs BASE and HEAD"
-  for sha in $(git rev-list --no-merges "${base}..${head}"); do
+  # Merge commits are included: their messages are text in the history too.
+  for sha in $(git rev-list "${base}..${head}"); do
     # Every line counts: a stored message has no git comment lines, and a
     # line starting with '#' (for example "#12 ...") is part of the message.
     ! git log -1 --format=%B "$sha" | has_hangul ||
@@ -93,6 +94,11 @@ cmd_selftest() {
   expect fail "a commit with Hangul" in_dir "$tmp/r" commits HEAD~2 HEAD
   git -C "$tmp/r" -c user.name=t -c user.email=t@t commit -q --allow-empty --cleanup=verbatim -m "ci: y" -m "# ${ko}" -m "Part of #1"
   expect fail "a commit with Hangul on a line starting with #" in_dir "$tmp/r" commits HEAD~1 HEAD
+  git -C "$tmp/r" checkout -q -b side HEAD~1
+  git -C "$tmp/r" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "ci: side"
+  git -C "$tmp/r" checkout -q -
+  git -C "$tmp/r" -c user.name=t -c user.email=t@t merge -q --no-ff -m "Merge side ${ko}" side
+  expect fail "a merge commit with Hangul" in_dir "$tmp/r" commits HEAD~1 HEAD
   echo "selftest passed"
 }
 
