@@ -120,11 +120,13 @@ cmd_verify_gate() {
       if (keep) print "#"; next }
     keep { print }')
   # The section that names this head: from its "Verified-by: vws-verify" line to the next such line or heading.
+  # Comments come oldest first; when several sections name this head, the newest (last) one is the verdict.
   section=$(tr -d '`' <<<"$text" | awk -v h="$head" '
-    /Verified-by:[[:space:]]*vws-verify/ { if (keep) exit; on = 1; buf = ""; next }
-    on && /^#/ { if (keep) exit; on = 0; next }
+    function done() { if (on && keep) last = buf; on = 0; keep = 0; buf = "" }
+    /Verified-by:[[:space:]]*vws-verify/ { done(); on = 1; next }
+    on && /^#/ { done(); next }
     on { buf = buf $0 "\n"; if ($0 ~ "^[[:space:]]*Head:[[:space:]]*" h "[[:space:]]*$") keep = 1 }
-    END { if (keep) printf "%s", buf }')
+    END { done(); printf "%s", last }')
   [[ -n $section ]] || die "verify-gate: no 'Verified-by: vws-verify' section names the head ${head}; a push after approval needs a new verification"
   for ((n = 1; n <= QUALITY_ITEMS; n++)); do
     line=$(grep -m1 -E "^[[:space:]]*(- )?${n}\.[[:space:]]" <<<"$section" || true)
@@ -207,8 +209,19 @@ visible_text() {
   awk '
     {
       line = $0; out = ""
-      if (!incom && line ~ /^[[:space:]]*(```|~~~)/) { fence = !fence; next }
-      if (fence) next
+      # A fence closes only on a line of the same character, at least as long as the opening run, with
+      # nothing after it (CommonMark), so "```" inside a "~~~~" block or a "```go" line does not close it.
+      if (!incom && !fence && match(line, /^[[:space:]]*(```+|~~~+)/)) {
+        run = substr(line, RSTART, RLENGTH); sub(/^[[:space:]]*/, "", run)
+        fch = substr(run, 1, 1); flen = length(run); fence = 1; next
+      }
+      if (fence) {
+        if (match(line, /^[[:space:]]*(```+|~~~+)[[:space:]]*$/)) {
+          run = line; gsub(/[[:space:]]/, "", run)
+          if (substr(run, 1, 1) == fch && length(run) >= flen) fence = 0
+        }
+        next
+      }
       while (1) {
         if (incom) {
           i = index(line, "-->"); if (!i) { line = ""; break }
@@ -270,10 +283,11 @@ cmd_pr_body() {
 }
 
 cmd_commit_msg() {
-  local file=${1:-} msg
+  local file=${1:-} mode=${2:-} msg
   [[ -n $file && -f $file ]] || die "commit-msg: needs the message file"
-  # Lines starting with # are git's comments and never reach the commit.
-  msg=$(grep -v '^#' "$file" || true)
+  # In the commit-msg hook, lines starting with # are git's comments and never reach the commit. A stored
+  # message (mode "stored", from pr-commits) has no such comments: every line is real and is checked.
+  if [[ $mode == stored ]]; then msg=$(cat "$file"); else msg=$(grep -v '^#' "$file" || true); fi
   if grep -q -i -E "$CLOSING_RE" <<<"$msg" || grep -q -i -E "$CLOSING_RE" <<<"$(visible_text <<<"$msg")"; then
     die "commit-msg: do not close issues from a commit (found Closes/Fixes/Resolves #N); write 'Part of #N'"
   fi
@@ -287,9 +301,15 @@ cmd_pr_commits() {
   [[ -n $base && -n $head ]] || die "pr-commits: needs BASE and HEAD"
   tmp=$(mktemp)
   trap 'rm -f "$tmp"' RETURN
-  for sha in $(git rev-list --no-merges "${base}..${head}"); do
+  # Merge commits too: a merge message that closes an issue closes it like any other commit. A range git
+  # cannot list (a bad ref) fails instead of checking nothing.
+  local -a shas
+  mapfile -t shas < <(git rev-list "${base}..${head}" || echo "rev-list-failed")
+  [[ ${shas[*]:-} != *rev-list-failed* ]] || die "pr-commits: cannot list the commits in ${base}..${head}"
+  for sha in "${shas[@]}"; do
+    [[ -n $sha ]] || continue
     git log -1 --format=%B "$sha" >"$tmp"
-    (cmd_commit_msg "$tmp") 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue, names #0 or has Hangul; write English with 'Part of #N'"
+    (cmd_commit_msg "$tmp" stored) 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue, names #0 or has Hangul; write English with 'Part of #N'"
   done
 }
 
@@ -485,6 +505,23 @@ Closes #12
   expect_fail "Part of owner/repo#0" env PR_BODY="Part of acme/repo#0" bash "$0" pr-body
   expect_fail "Part of #00" env PR_BODY="Part of #00" bash "$0" pr-body
   expect_fail "Part of #012" env PR_BODY="Part of #012" bash "$0" pr-body
+  # A fence closes only on the same character, at least as long (vws-deploy guard P2).
+  expect_fail "Part of behind a shorter inner fence" env PR_BODY="~~~~
+\`\`\`
+Part of #12
+~~~~" bash "$0" pr-body
+  expect_fail "Part of behind a three-tilde line in a four-tilde fence" env PR_BODY="~~~~
+~~~
+Part of #12
+~~~~" bash "$0" pr-body
+  expect_fail "Part of behind a fence line with text after it" env PR_BODY="\`\`\`
+\`\`\`go
+Part of #12
+\`\`\`" bash "$0" pr-body
+  expect_pass "Part of after a properly closed long fence" env PR_BODY="~~~~
+x
+~~~~~
+Part of #12" bash "$0" pr-body
   expect_fail "Part of #0 next to a valid Part of" env PR_BODY="Part of #3
 Part of #0" bash "$0" pr-body
   expect_pass "Part of #10" env PR_BODY="Part of #10" bash "$0" pr-body
@@ -619,6 +656,22 @@ GH
   c4=$(git -C "$repo" rev-parse HEAD)
   git -C "$repo" commit -q --allow-empty -m "ci: u" -m "Resolved https://github.com/acme/repo/issues/4" -m "Part of #4"
   expect_fail "a commit that closes an issue by URL" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c4"
+  # Stored messages keep their # lines; merge commits are checked; a bad range fails (vws-deploy guard P2).
+  local c5
+  git -C "$repo" reset -q --hard "$c4"
+  c5=$(git -C "$repo" rev-parse HEAD~1)
+  git -C "$repo" reset -q --hard "$c5"
+  git -C "$repo" commit -q --allow-empty -m "ci: v" -m "# Fixes #4" -m "Part of #4"
+  expect_fail "a stored commit message with '# Fixes #N'" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" reset -q --hard "$c5"
+  git -C "$repo" checkout -q -b side "$c5"
+  git -C "$repo" commit -q --allow-empty -m "ci: side" -m "Part of #4"
+  git -C "$repo" checkout -q commits
+  git -C "$repo" merge -q --no-ff -m "Merge side" -m "Closes #4" side
+  expect_fail "a merge commit that closes an issue" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" reset -q --hard "$c5"
+  expect_fail "pr-commits on a range git cannot list" bash -c 'cd "$1" && bash "$2" pr-commits no-such-ref HEAD' _ "$repo" "$OLDPWD_SCRIPT"
+  expect_pass "pr-commits on an empty clean range" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
   # verify-gate: label and a section bound to the head with evidence for every item.
   local h1 h2 ev
   h1=$(printf 'a%.0s' {1..40}); h2=$(printf 'b%.0s' {1..40})
@@ -671,6 +724,11 @@ GH
   sed 's#^Codex review: .*#Codex review: /workspace/handoff/codex/vws-deploy-1-aaaaaaa.md#' "$ev" >"$tmp/codexnon.md"
   expect_fail "a Codex review without blocking=<N>" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexnon.md"
   { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h2}"; echo "1. stale"; cat "$ev"; } >"$tmp/two.md"
+  # Several sections name the head: the newest (last) one is the verdict (vws-deploy guard P2).
+  { cat "$ev"; echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h1}"; echo "1. withdrawn"; } >"$tmp/newbad.md"
+  expect_fail "a newer incomplete verdict for the head replaces a complete one" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/newbad.md"
+  { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h1}"; echo "1. first try"; cat "$ev"; } >"$tmp/newgood.md"
+  expect_pass "a newer complete verdict for the head replaces an incomplete one" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/newgood.md"
   expect_pass "a stale section and a current one: the current one counts" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/two.md"
   # Only comments count: the same section in the PR body (no @@comment-by block) is ignored.
   grep -v '^@@comment-by:' "$ev" >"$tmp/body.md"
