@@ -23,7 +23,8 @@ func (h ctxHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h ctxHandler) WithAttrs(a []slog.Attr) slog.Handler { return ctxHandler{h.Handler.WithAttrs(a)} }
-func (h ctxHandler) WithGroup(n string) slog.Handler      { return ctxHandler{h.Handler.WithGroup(n)} }
+
+func (h ctxHandler) WithGroup(n string) slog.Handler { return ctxHandler{h.Handler.WithGroup(n)} }
 
 // fanout sends each record to every handler. Stdout is first: an OTLP failure never hides a log line.
 type fanout []slog.Handler
@@ -95,4 +96,5 @@ func (g levelGate) Enabled(ctx context.Context, l slog.Level) bool {
 func (g levelGate) WithAttrs(a []slog.Attr) slog.Handler {
 	return levelGate{g.Handler.WithAttrs(a), g.min}
 }
+
 func (g levelGate) WithGroup(n string) slog.Handler { return levelGate{g.Handler.WithGroup(n), g.min} }
