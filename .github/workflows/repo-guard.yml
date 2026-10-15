@@ -65,6 +65,8 @@ jobs:
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           GUARD_VERIFY_ACTORS: ${{ vars.VWS_VERIFY_ACTORS }}
@@ -88,9 +90,17 @@ jobs:
           # Who last added the label, from the issue events.
           GUARD_VERIFY_LABELER=$(gh api --paginate "repos/${REPO}/issues/${NUMBER}/events" \
             --jq '.[] | select(.event == "labeled" and .label.name == "verify-approved") | .actor.login' | tail -n 1)
-          # The head pusher: the GitHub login GitHub links to the head commit's committer.
-          pusher=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" --jq '.committer.login // ""')
-          GUARD_VERIFY_EXCLUDE="${PR_AUTHOR},${pusher}"
+          # The head pusher: the actor of the push that set the head ref to HEAD_SHA (repository activity API),
+          # not the commit's committer field, which anyone can set. No matching push fails closed. The
+          # committer's linked login stays excluded as well.
+          pusher=$(gh api "repos/${HEAD_REPO}/activity?ref=refs/heads/${HEAD_REF}&activity_type=push&per_page=100" \
+            --jq "[.[] | select(.after == \"${HEAD_SHA}\")][0].actor.login // \"\"")
+          if [[ -z $pusher ]]; then
+            echo "verify-gate: no push of ${HEAD_SHA} to ${HEAD_REPO} ${HEAD_REF} found; cannot tell who pushed the head" >&2
+            exit 1
+          fi
+          committer=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" --jq '.committer.login // ""')
+          GUARD_VERIFY_EXCLUDE="${PR_AUTHOR},${pusher},${committer}"
           export GUARD_VERIFY_LABELER GUARD_VERIFY_EXCLUDE
           scripts/guard-agents.sh verify-gate "$HEAD_SHA" "$LABELS" "$text"
 
