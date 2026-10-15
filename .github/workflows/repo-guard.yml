@@ -73,9 +73,11 @@ jobs:
           set -euo pipefail
           text=$(mktemp)
           # One "@@comment-by: LOGIN" block per comment, from the API's author field. A body line that
-          # imitates the marker is defanged so a comment cannot claim another author.
+          # imitates the marker is defanged so a comment cannot claim another author. Control characters are
+          # normalized first (CRLF to LF, any other one to "?"), so "\r@@comment-by:" cannot slip past the defang.
           gh api --paginate "repos/${REPO}/issues/${NUMBER}/comments" \
-            --jq '.[] | "@@comment-by: \(.user.login)\n\(.body | gsub("(?m)^@@comment-by:"; "@ @comment-by:"))"' >"$text"
+            --jq '.[] | "@@comment-by: \(.user.login)\n\(.body | gsub("\r\n"; "\n")
+              | gsub("[\u0000-\u0008\u000b-\u001f\u007f]"; "?") | gsub("(?m)^@@comment-by:"; "@ @comment-by:"))"' >"$text"
           # Who last added the label, from the issue events.
           GUARD_VERIFY_LABELER=$(gh api --paginate "repos/${REPO}/issues/${NUMBER}/events" \
             --jq '.[] | select(.event == "labeled" and .label.name == "verify-approved") | .actor.login' | tail -n 1)

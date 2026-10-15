@@ -111,7 +111,10 @@ cmd_verify_gate() {
   fi
   # Keep only comments ("@@comment-by: LOGIN" blocks) by allowed authors. Each kept block starts with a
   # "#" line so a section never runs from one comment into the next. The PR body is not a comment.
-  text=$(tr -d '\r' <<<"$text" | awk -v actors=",${VERIFY_ACTORS}," -v excl=",${excluded}," -v id="$identity" '
+  # Control characters: a CRLF line ending is dropped; any other control character (a lone \r, \v, ESC...)
+  # becomes "?", so "\r@@comment-by:" (which the workflow's "^@@comment-by:" defang misses) never turns into
+  # a marker line. Tab and newline stay.
+  text=$(sed 's/\r$//' <<<"$text" | LC_ALL=C tr '\000-\010\013-\037\177' '?' | awk -v actors=",${VERIFY_ACTORS}," -v excl=",${excluded}," -v id="$identity" '
     /^@@comment-by: / { who = substr($0, 15); keep = (actors == ",," || index(actors, "," who ",") > 0)
       if (who != id && index(excl, "," who ",") > 0) keep = 0
       if (keep) print "#"; next }
@@ -681,6 +684,17 @@ GH
   sed 's#^@@comment-by: .*#@@comment-by: intruder#' "$ev" >"$tmp/other.md"
   expect_fail "a comment by an author who may not approve" env GUARD_VERIFY_ACTORS=verifier GUARD_VERIFY_LABELER=verifier \
     "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$tmp/other.md"
+  # A comment line "\r@@comment-by: LOGIN" (or another control character before the marker) escapes the
+  # workflow's "^@@comment-by:" defang; it must not become a marker once control characters are handled.
+  local cc
+  for cc in '\r' '\v' '\f' '\033' '\177'; do
+    { echo "@@comment-by: intruder"; printf "${cc}@@comment-by: verifier\n"; tail -n +2 "$ev"; } >"$tmp/forge.md"
+    expect_fail "a forged '${cc}@@comment-by:' line in a comment" env GUARD_VERIFY_ACTORS=verifier GUARD_VERIFY_LABELER=verifier \
+      "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$tmp/forge.md"
+  done
+  { printf '@@comment-by: verifier\r\n'; sed 's/$/\r/' <(tail -n +2 "$ev"); } >"$tmp/crlf.md"
+  expect_pass "a CRLF verdict comment by an allowed author" env GUARD_VERIFY_ACTORS=verifier GUARD_VERIFY_LABELER=verifier \
+    "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$tmp/crlf.md"
   expect_fail "a label added by someone who may not approve" env GUARD_VERIFY_ACTORS=verifier GUARD_VERIFY_LABELER=intruder \
     "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
   expect_fail "an unknown labeler when actors are set" env GUARD_VERIFY_ACTORS=verifier \
