@@ -18,10 +18,14 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
+  # Common golangci-lint baseline (vws-deploy .github/golangci-common.yml, vws-deploy#300).
+  # fetch-depth 0 gives new-from-merge-base the origin/main history it compares against.
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: guard-agents.sh rejects bad inputs
         run: scripts/guard-agents.sh selftest
       - uses: actions/setup-go@v5
@@ -30,6 +34,11 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.14.0
+          install-only: true
+      - name: Lint
+        run: golangci-lint run --timeout=5m ./...
+      - name: Format (gofumpt, goimports)
+        run: golangci-lint fmt --diff
 
   imports:
     runs-on: ubuntu-latest
