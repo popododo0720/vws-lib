@@ -63,3 +63,26 @@ jobs:
         run: scripts/vendor-lib.sh selftest
       - name: vendor-proto.sh rejects untagged, edited, moved and forged copies
         run: scripts/vendor-proto.sh selftest
+
+  # English only: tracked files (with .github/english-allowlist), the PR body and the PR's commit messages.
+  english:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: check-english.sh rejects bad inputs
+        run: scripts/check-english.sh selftest
+      - name: Tracked files are English
+        run: scripts/check-english.sh files
+      - name: PR body is English
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: scripts/check-english.sh text
+      - name: Commit messages are English
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/check-english.sh commits "$BASE_SHA" "$HEAD_SHA"
