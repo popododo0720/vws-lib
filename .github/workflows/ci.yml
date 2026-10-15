@@ -18,7 +18,7 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
-  # Common golangci-lint baseline (vws-deploy lint/golangci-common.yml, vws-deploy#300).
+  # Common golangci-lint baseline (vws-deploy .github/golangci-common.yml, vws-deploy#300).
   # fetch-depth 0 gives new-from-merge-base the origin/main history it compares against.
   lint:
     runs-on: ubuntu-latest
