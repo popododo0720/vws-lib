@@ -6,7 +6,8 @@ name: repo-guard
 
 on:
   pull_request:
-    types: [opened, edited, reopened, synchronize]
+    # labeled/unlabeled re-run verify-gate when vws-verify approves or the label is removed (#249).
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -17,14 +18,90 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Base is the main branch
         env:
           GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
           BASE_REF: ${{ github.base_ref }}
         run: scripts/guard-agents.sh pr-base "$BASE_REF"
-      - name: Body references an issue
+      - name: Body says Part of #N and closes no issue
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: scripts/guard-agents.sh pr-body
+      - name: No commit closes an issue
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/guard-agents.sh pr-commits "$BASE_SHA" "$HEAD_SHA"
+      - name: guard-agents.sh is the canonical vws-deploy copy
+        run: scripts/guard-agents.sh identity scripts/guard-agents.sh.sha256
       - name: AGENTS.md has the guardrails
         run: scripts/guard-agents.sh agents
+
+  # verify-gate (#249): red unless the PR has the verify-approved label and a comment with a
+  # "Verified-by: vws-verify" section that names the current head SHA with evidence for every docs/QUALITY.md
+  # item. The PR body never counts. A push changes the head, so an old approval no longer counts.
+  # When the repo variable VWS_VERIFY_ACTORS (comma list of logins) is set, the comment author and whoever last
+  # added the label must be in it. The PR author and the head commit's pusher (GUARD_VERIFY_EXCLUDE) never
+  # approve, unless the login is the vws-verify identity (repo variable VWS_VERIFY_IDENTITY).
+  # Limits (docs/QUALITY.md "Known gaps"): on pull_request GitHub runs this YAML from the PR's merge commit,
+  # so a PR CAN edit this job. Only the guard script is taken from the base commit, which stops a PR from
+  # quietly weakening the script but not from rewriting this YAML. All bots share one account, so the actor
+  # check cannot tell vws-verify from the PR author.
+  verify-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Approved for this head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          GUARD_VERIFY_ACTORS: ${{ vars.VWS_VERIFY_ACTORS }}
+          GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}
+        run: |
+          set -euo pipefail
+          text=$(mktemp)
+          # One "@@comment-by: LOGIN" block per comment, from the API's author field. A body line that
+          # imitates the marker is defanged so a comment cannot claim another author.
+          gh api --paginate "repos/${REPO}/issues/${NUMBER}/comments" \
+            --jq '.[] | "@@comment-by: \(.user.login)\n\(.body | gsub("(?m)^@@comment-by:"; "@ @comment-by:"))"' >"$text"
+          # Who last added the label, from the issue events.
+          GUARD_VERIFY_LABELER=$(gh api --paginate "repos/${REPO}/issues/${NUMBER}/events" \
+            --jq '.[] | select(.event == "labeled" and .label.name == "verify-approved") | .actor.login' | tail -n 1)
+          # The head pusher: the GitHub login GitHub links to the head commit's committer.
+          pusher=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" --jq '.committer.login // ""')
+          GUARD_VERIFY_EXCLUDE="${PR_AUTHOR},${pusher}"
+          export GUARD_VERIFY_LABELER GUARD_VERIFY_EXCLUDE
+          scripts/guard-agents.sh verify-gate "$HEAD_SHA" "$LABELS" "$text"
+
+  # A new push drops the approval label as well; the head check above already fails without it.
+  # Only this job may write, and only labels (issues: write). It checks out nothing and runs no PR code.
+  verify-reset:
+    if: github.event.action == 'synchronize'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Remove verify-approved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          if [[ ",${LABELS}," == *",verify-approved,"* ]]; then
+            gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" >/dev/null
+            echo "verify-approved removed: a new head needs a new verification"
+          fi
