@@ -1,0 +1,2 @@
+# check-english.sh files: files that may contain Hangul. One "<glob> <reason>" per line.
+# A glob matches a path from git ls-files with bash pattern rules (* also crosses /). Keep the list short.

@@ -1,13 +1,13 @@
 ---
 name: incident
-about: 규칙 위반이나 사고 기록
+about: Record of a rule violation or incident
 labels: incident
 ---
 
-## 원인
+## Cause
 
-## 영향
+## Impact
 
-## 조치
+## Action
 
-## 재발방지
+## Prevention

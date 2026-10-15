@@ -1,12 +1,12 @@
 Closes #
 
-## 무엇을 바꿨나
+## What changed
 
-## 검증 방법 (실제로 돌린 것만)
+## How it was verified (only what was actually run)
 
-## 미검증 항목 (확인 필요)
+## Not verified (needs checking)
 
-## 다른 PR과의 충돌
+## Conflicts with other PRs
 
 ## Quality checklist (required)
 
