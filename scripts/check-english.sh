@@ -49,8 +49,13 @@ cmd_text() {
 cmd_commits() {
   local base=${1:-} head=${2:-} sha
   [[ -n $base && -n $head ]] || die "english: commits needs BASE and HEAD"
+  local ref shas
+  for ref in "$base" "$head"; do
+    git rev-parse -q --verify "${ref}^{commit}" >/dev/null || die "english: ${ref} is not a commit"
+  done
   # Merge commits are included: their messages are text in the history too.
-  for sha in $(git rev-list "${base}..${head}"); do
+  shas=$(git rev-list "${base}..${head}") || die "english: cannot list commits ${base}..${head}"
+  for sha in $shas; do
     # Every line counts: a stored message has no git comment lines, and a
     # line starting with '#' (for example "#12 ...") is part of the message.
     ! git log -1 --format=%B "$sha" | has_hangul ||
@@ -94,6 +99,8 @@ cmd_selftest() {
   expect fail "a commit with Hangul" in_dir "$tmp/r" commits HEAD~2 HEAD
   git -C "$tmp/r" -c user.name=t -c user.email=t@t commit -q --allow-empty --cleanup=verbatim -m "ci: y" -m "# ${ko}" -m "Part of #1"
   expect fail "a commit with Hangul on a line starting with #" in_dir "$tmp/r" commits HEAD~1 HEAD
+  expect fail "an invalid BASE ref" in_dir "$tmp/r" commits no-such-ref HEAD
+  expect fail "an invalid HEAD ref" in_dir "$tmp/r" commits HEAD no-such-ref
   git -C "$tmp/r" checkout -q -b side HEAD~1
   git -C "$tmp/r" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "ci: side"
   git -C "$tmp/r" checkout -q -
