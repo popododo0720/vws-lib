@@ -8,6 +8,9 @@ on:
   pull_request:
     # labeled/unlabeled re-run verify-gate when vws-verify approves or the label is removed (#249).
     types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+  # A verdict comment that is added, edited or deleted re-runs verify-gate (verify-rerun below).
+  issue_comment:
+    types: [created, edited, deleted]
 
 permissions:
   contents: read
@@ -15,6 +18,7 @@ permissions:
 
 jobs:
   pr-hygiene:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +54,7 @@ jobs:
   # quietly weakening the script but not from rewriting this YAML. All bots share one account, so the actor
   # check cannot tell vws-verify from the PR author.
   verify-gate:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -73,13 +78,6 @@ jobs:
           GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}
         run: |
           set -euo pipefail
-          # Bootstrap: the guard script comes from the base commit. Before this repo's main has a copy with the
-          # verify-gate command (the PR that adopts it), there is nothing trusted to run, so the gate reports that
-          # and passes. A PR cannot change the base copy, and every later PR runs the real gate.
-          if ! grep -q '^  verify-gate)' scripts/guard-agents.sh; then
-            echo "::warning::bootstrap: the base guard-agents.sh has no verify-gate command; the gate starts after this merges"
-            exit 0
-          fi
           # Labels as they are now, not the event snapshot (a re-run replays the original event).
           LABELS=$(gh api "repos/${REPO}/issues/${NUMBER}/labels" --jq '[.[].name] | join(",")')
           text=$(mktemp)
@@ -92,10 +90,9 @@ jobs:
           # Who last added the label, from the issue events.
           GUARD_VERIFY_LABELER=$(gh api --paginate "repos/${REPO}/issues/${NUMBER}/events" \
             --jq '.[] | select(.event == "labeled" and .label.name == "verify-approved") | .actor.login' | tail -n 1)
-          # The head pusher: the actor of the push that set the head ref to HEAD_SHA (repository activity API),
-          # not the commit's committer field, which anyone can set. No matching push fails closed. The
-          # committer's linked login stays excluded as well.
-          # Every activity type counts (push, force_push, branch_creation, ...); -f encodes the ref.
+          # The head pusher: the actor of the activity that set the head ref to HEAD_SHA (repository activity
+          # API; push, force push, branch creation...), not the commit's committer field, which anyone can set.
+          # No match fails closed. The committer's linked login stays excluded as well.
           pusher=$(gh api -X GET "repos/${HEAD_REPO}/activity" -f ref="refs/heads/${HEAD_REF}" -F per_page=100 \
             --jq "[.[] | select(.after == \"${HEAD_SHA}\")][0].actor.login // \"\"")
           if [[ -z $pusher ]]; then
@@ -110,7 +107,7 @@ jobs:
   # A new push drops the approval label as well; the head check above already fails without it.
   # Only this job may write, and only labels (issues: write). It checks out nothing and runs no PR code.
   verify-reset:
-    if: github.event.action == 'synchronize'
+    if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -124,6 +121,51 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ",${LABELS}," == *",verify-approved,"* ]]; then
-            gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" >/dev/null
-            echo "verify-approved removed: a new head needs a new verification"
+            # Safe to re-run: a label that is already gone (HTTP 404) is the wanted state; other errors fail.
+            if out=$(gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" 2>&1); then
+              echo "verify-approved removed: a new head needs a new verification"
+            elif [[ $out == *"HTTP 404"* ]]; then
+              echo "verify-approved was already removed"
+            else
+              echo "$out" >&2
+              exit 1
+            fi
           fi
+
+  # A comment event runs on the default branch, and its check would not attach to the PR head. So this job
+  # re-runs the verify-gate job of the newest pull_request run for the PR's current head; that job reads
+  # the comments again. It checks out nothing and runs no PR code; it may only re-run jobs (actions: write).
+  verify-rerun:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Re-run verify-gate for the PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/${REPO}/pulls/${NUMBER}" --jq '.head.sha')
+          # Several PRs can share a head SHA: prefer the newest run linked to this PR number. Fork PRs list no
+          # pull_requests on the run, so the newest run for the head is the fallback.
+          run=$(gh api "repos/${REPO}/actions/workflows/repo-guard.yml/runs?event=pull_request&head_sha=${head}&per_page=100" \
+            --jq "([.workflow_runs[] | select(any(.pull_requests[]?; .number == ${NUMBER}))][0].id) // .workflow_runs[0].id // empty")
+          if [[ -z $run ]]; then echo "no pull_request run for ${head} yet"; exit 0; fi
+          job=$(gh api "repos/${REPO}/actions/runs/${run}/jobs" --jq '.jobs[] | select(.name == "verify-gate") | .id')
+          if [[ -z $job ]]; then echo "run ${run} has no verify-gate job"; exit 0; fi
+          status=
+          # A job that is still running cannot be re-run yet: wait for it (up to 15 minutes), then re-run.
+          # Giving up fails this job, so a changed verdict is never silently left unchecked.
+          for _ in $(seq 1 30); do
+            status=$(gh api "repos/${REPO}/actions/jobs/${job}" --jq '.status')
+            if [[ $status == completed ]] && gh api -X POST "repos/${REPO}/actions/jobs/${job}/rerun" >/dev/null; then
+              echo "verify-gate job ${job} re-run"; exit 0
+            fi
+            sleep 30
+          done
+          echo "verify-gate job ${job} could not be re-run (status ${status})" >&2
+          exit 1
