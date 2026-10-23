@@ -1,0 +1,21 @@
+# CI-failure marker caller (popododo0720/vws-deploy#412, docs/ci-fail.md there). When one of this
+# repo's CI workflows fails on a pull request head, the reusable workflow posts or updates one marker
+# comment per head SHA. It and its script are pinned to one vws-deploy main commit; bump the SHA to
+# update. workflow_run always runs this file from the default branch, so a PR cannot change it.
+# repo-guard is not listed: its verify-gate job is red on every head until vws-verify approves.
+name: ci-fail-caller
+
+on:
+  workflow_run:
+    workflows: [ci, english]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  marker:
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    uses: popododo0720/vws-deploy/.github/workflows/ci-fail.yml@831bcbba7409eb2c4e889d0eabd2648a4578f188 # vws-deploy#420
