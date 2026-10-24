@@ -1,0 +1,46 @@
+name: incident
+description: Record of a corrected mistake, rule violation or incident (/correct loop, AGENTS.md)
+title: "incident: "
+labels: [incident]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What actually happened and who corrected it (the user, tmp, eggbot, a failed verify). Times in KST.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Affected repos, PRs, cluster resources and users.
+    validations:
+      required: true
+  - type: textarea
+    id: detection
+    attributes:
+      label: How it was detected
+      description: How it came to light (correction message, CI, verify, a person).
+    validations:
+      required: true
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Root cause
+    validations:
+      required: true
+  - type: textarea
+    id: catching-check
+    attributes:
+      label: The check that would have caught this
+      description: A test, lint, guard rule or archtest that actually fails on an input containing this mistake.
+    validations:
+      required: true
+  - type: textarea
+    id: follow-ups
+    attributes:
+      label: Follow-up issue and PR links
+      description: The PR or issue that promoted this to a check. Once promoted, close this incident with that link.
+    validations:
+      required: false
