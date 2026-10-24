@@ -1,0 +1,23 @@
+# Labels every vws-* repo must have. This file is the definition; creating the labels on GitHub is a
+# separate, manual step (gh label create NAME --color COLOR --description TEXT --force).
+- name: incident
+  color: "b60205"
+  description: "Corrected mistake, rule violation or outage; see the /correct loop in AGENTS.md"
+- name: ready
+  color: "0e8a16"
+  description: "A human approved this issue or PR for an agent to take"
+- name: deepseek
+  color: "1d76db"
+  description: "The factory orchestrator hands this task to DeepSeek (vws-deploy#333)"
+- name: grok
+  color: "5319e7"
+  description: "The task goes to grok after two DeepSeek failures (vws-deploy#333)"
+- name: in-review
+  color: "fbca04"
+  description: "An agent's PR for this task is waiting for vws-verify"
+- name: blocked
+  color: "d93f0b"
+  description: "Waiting on a dependency or a human decision"
+- name: priority/blocker
+  color: "d73a4a"
+  description: "The factory orchestrator dispatches this task before all other queued tasks (vws-deploy#333)"
