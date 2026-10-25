@@ -43,7 +43,7 @@ Write everything in this repo in English: README, code comments, docs, AGENTS.md
 2. Every few days vws-verify runs a gardener pass. It groups open incidents by cause and promotes repeated ones to a check (test, lint, guard rule, archtest), not a sentence. The check must actually fail on an input that contains the mistake.
 3. When the promoting PR is merged, close the incident with its link. An incident that will not be promoted is closed with the reason.
 4. The milestone report (to tmp) lists the number of incidents in the period and the checks promoted.
-5. The `incident` label is defined in `.github/labels.yml`, copied from vws-deploy. That file is only a definition and does not create the label on GitHub. `scripts/guard.sh correct` runs `scripts/guard-agents.sh correct`, which checks this section and its body, the required fields of the form and the label definition; `repo-guard.yml` runs it on every pull request and `scripts/guard_test.sh` shows it fails on an empty section.
+5. The `incident` label is defined in `.github/labels.yml`, copied from vws-deploy. That file is only a definition and does not create the label on GitHub. `scripts/guard.sh correct` runs `scripts/guard-agents.sh correct`, which checks this section and its body, the required fields of the form and the label definition; the `correct` job in `.github/workflows/ci.yml` runs it on every pull request and `scripts/guard_test.sh` shows it fails on an empty section.
 
 ## Insider-risk guardrails
 
