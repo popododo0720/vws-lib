@@ -37,6 +37,14 @@ Write everything in this repo in English: README, code comments, docs, AGENTS.md
 - Do not use Cursor cloud agents (CloudAgent). Work with `gh` and `git`.
 - Never write secrets or account IDs in code, tests or logs.
 
+## /correct loop
+
+1. When a bot is corrected (by the user Su Kim, tmp or eggbot, or by a failed `vws verify`), it opens an issue the same day with the `incident` label using the `.github/ISSUE_TEMPLATE/incident.yml` form. It must fill in the correction and "the check that would have caught this".
+2. Every few days vws-verify runs a gardener pass. It groups open incidents by cause and promotes repeated ones to a check (test, lint, guard rule, archtest), not a sentence. The check must actually fail on an input that contains the mistake.
+3. When the promoting PR is merged, close the incident with its link. An incident that will not be promoted is closed with the reason.
+4. The milestone report (to tmp) lists the number of incidents in the period and the checks promoted.
+5. The `incident` label is defined in `.github/labels.yml`, copied from vws-deploy. That file is only a definition and does not create the label on GitHub. `scripts/guard.sh correct` runs `scripts/guard-agents.sh correct`, which checks this section and its body, the required fields of the form and the label definition; the `correct` job in `.github/workflows/ci.yml` runs it on every pull request and `scripts/guard_test.sh` shows it fails on an empty section.
+
 ## Insider-risk guardrails
 
 Bots are insider risks too. The rules below have no exceptions.

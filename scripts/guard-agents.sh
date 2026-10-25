@@ -8,8 +8,11 @@
 #   guard-agents.sh identity [SUMFILE]      this file's sha256 equals SUMFILE (default scripts/guard-agents.sh.sha256)
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
 #   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Part of #N", no closing keyword and no Hangul
+#   guard-agents.sh pr-checklist [FILE]     each QUALITY_TITLES checklist item exactly once in the pull request text
+#                                           (FILE or $PR_BODY) is ticked and has evidence or "N/A: <reason>"
+#   guard-agents.sh pr-issue [FILE]         prints the issue reference from "Part of #N" (#N, or owner/repo#N)
 #   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N, owner/repo#N or an issue URL) and no Hangul
-#   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD passes commit-msg
+#   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD has a "<type>: summary" subject and "Part of #N", and passes commit-msg
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
 #   guard-agents.sh verify-gate HEAD LABELS [FILE]
 #                                           the pull request is verify-approved for HEAD: LABELS (comma list) has
@@ -198,6 +201,8 @@ CLOSING_RE='(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[
 # Issue numbers start at 1: #0, #00 and #012 name no issue and are rejected wherever they appear.
 PART_OF_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#[1-9][0-9]*'
 PART_OF_ZERO_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#0'
+# A commit subject starts with a lowercase type, an optional (scope) and a colon: "ci: x", "docs(x): y".
+SUBJECT_TYPE_RE='^[a-z][a-z0-9-]*(\([a-z0-9._-]+\))?!?:[[:space:]]+[^[:space:]]'
 
 # Work items are tracked on parent issues that a human closes. No PR or commit may close an
 # issue automatically, so closing keywords are banned outright. Telling a parent issue from a
@@ -282,6 +287,81 @@ cmd_pr_body() {
   ! has_hangul <<<"$body" || die "pr-body: write the pull request text in English (found Hangul)"
 }
 
+# The 9-item Quality checklist in the PR template (docs/QUALITY.md), by the bold item titles of
+# .github/pull_request_template.md. Only the visible text counts (visible_text: HTML comments, also across
+# lines, and code fences are removed). One section; each of the QUALITY_TITLES exactly once; each item
+# carries "Evidence: <URL, path, test or output>" or "N/A: <reason>". A ticked box needs either one; an
+# unticked box passes only with "N/A: <reason>" (the template: "An unchecked box without a reason means
+# the PR is not done"). The untouched template line and an "N/A:" with no reason fail.
+QUALITY_TITLES=("Error handling" "Retries and timeouts" "Security" "Unit tests" "Integration tests"
+  "vws-test live evidence (required)" "Observability" "Idempotency" "AWS compatibility (where applicable)")
+cmd_pr_checklist() {
+  local body=${PR_BODY:-} heading="## Quality checklist (required)" section count n line title ev na t c
+  if [[ -n ${1:-} ]]; then
+    [[ -f $1 ]] || die "pr-checklist: ${1} does not exist"
+    body=$(cat "$1")
+  fi
+  body=$(visible_text <<<"$body")
+  count=$(grep -c -E '^## Quality checklist \(required\)[[:space:]]*$' <<<"$body" || true)
+  [[ $count -gt 0 ]] || die "pr-checklist: the pull request text needs a '${heading}' section"
+  [[ $count -eq 1 ]] || die "pr-checklist: the pull request text has ${count} '${heading}' sections; keep one"
+  section=$(awk -v h="$heading" '
+    index($0, h) == 1 && substr($0, length(h) + 1) ~ /^[[:space:]]*$/ { on = 1; next }
+    on && /^## / { exit }
+    on { print }' <<<"$body")
+  local -a items=() bad=()
+  local -A seen=()
+  mapfile -t items < <(grep -E '^[[:space:]]*-[[:space:]]+\[[ xX]\][[:space:]]' <<<"$section" || true)
+  for ((n = 0; n < ${#items[@]}; n++)); do
+    line=${items[$n]}
+    title=$(grep -o -E '\*\*[^*]+\*\*' <<<"$line" | head -n 1 || true)
+    title=${title//\*\*/}
+    [[ -n $title ]] || title=${line#*- \[[ xX]\] }
+    c=0
+    for t in "${QUALITY_TITLES[@]}"; do [[ $title == "$t" ]] && c=1; done
+    if [[ $c -eq 0 ]]; then
+      bad+=("$((n + 1)) (${title}): not a docs/QUALITY.md item")
+      continue
+    fi
+    seen[$title]=$((${seen[$title]:-0} + 1))
+    ev=""
+    if [[ $line == *Evidence:* ]]; then ev=${line##*Evidence:}; fi
+    ev=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$ev")
+    na=$(grep -o -i -E 'N/A:.*' <<<"$line" | head -n 1 || true)
+    # A line may carry "N/A: reason" in place of the Evidence field.
+    [[ -n $ev ]] || ev=$na
+    if [[ -n $ev ]] && grep -q -i -E '^N/A' <<<"$ev" && ! grep -q -i -E '^N/A:[[:space:]]*[^[:space:]]' <<<"$ev"; then
+      bad+=("$((n + 1)) (${title}): 'N/A' needs a reason")
+    elif [[ ! $line =~ ^[[:space:]]*-[[:space:]]+\[[xX]\] ]]; then
+      grep -q -i -E 'N/A:[[:space:]]*[^[:space:]]' <<<"$na" ||
+        bad+=("$((n + 1)) (${title}): box is not checked and has no 'N/A: reason'")
+    elif [[ -z $ev ]]; then
+      bad+=("$((n + 1)) (${title}): no evidence or 'N/A: reason'")
+    fi
+  done
+  for t in "${QUALITY_TITLES[@]}"; do
+    c=${seen[$t]:-0}
+    if [[ $c -eq 0 ]]; then bad+=("missing item (${t})"); elif [[ $c -gt 1 ]]; then bad+=("item (${t}) appears ${c} times"); fi
+  done
+  [[ ${#bad[@]} -eq 0 ]] || die "pr-checklist: ${bad[*]}"
+}
+
+# The issue a PR belongs to, from the Part of reference. #N stays local; owner/repo#N is printed as written
+# so the caller can skip an issue in another repository instead of reading the wrong number here.
+cmd_pr_issue() {
+  local body=${PR_BODY:-} seen
+  if [[ -n ${1:-} ]]; then
+    [[ -f $1 ]] || die "pr-issue: ${1} does not exist"
+    body=$(cat "$1")
+  fi
+  seen=$(visible_text <<<"$body")
+  if [[ $seen =~ (^|[^[:alnum:]])([Pp]art\ of[[:space:]]+)(([A-Za-z0-9._/-]+)?#[1-9][0-9]*) ]]; then
+    printf '%s\n' "${BASH_REMATCH[3]}"
+  else
+    die "pr-issue: the pull request text needs 'Part of #N' outside HTML comments and code fences"
+  fi
+}
+
 cmd_commit_msg() {
   local file=${1:-} mode=${2:-} msg
   [[ -n $file && -f $file ]] || die "commit-msg: needs the message file"
@@ -297,7 +377,7 @@ cmd_commit_msg() {
 }
 
 cmd_pr_commits() {
-  local base=${1:-} head=${2:-} sha tmp
+  local base=${1:-} head=${2:-} sha subject body tmp
   [[ -n $base && -n $head ]] || die "pr-commits: needs BASE and HEAD"
   tmp=$(mktemp)
   trap 'rm -f "$tmp"' RETURN
@@ -308,7 +388,13 @@ cmd_pr_commits() {
   [[ ${shas[*]:-} != *rev-list-failed* ]] || die "pr-commits: cannot list the commits in ${base}..${head}"
   for sha in "${shas[@]}"; do
     [[ -n $sha ]] || continue
-    git log -1 --format=%B "$sha" >"$tmp"
+    subject=$(git log -1 --format=%s "$sha")
+    [[ $subject =~ $SUBJECT_TYPE_RE ]] ||
+      die "pr-commits: ${sha:0:12} subject is not '<type>: summary' (${subject})"
+    body=$(git log -1 --format=%B "$sha")
+    grep -q -i -E "$PART_OF_RE" <<<"$(visible_text <<<"$body")" ||
+      die "pr-commits: ${sha:0:12} has no 'Part of #N' in its message"
+    printf '%s\n' "$body" >"$tmp"
     (cmd_commit_msg "$tmp" stored) 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue, names #0 or has Hangul; write English with 'Part of #N'"
   done
 }
@@ -541,6 +627,64 @@ Part of #0" bash "$0" pr-body
   expect_fail "pr-body with Hangul" env PR_BODY="Part of #12 $(printf '\352\267\234')" bash "$0" pr-body
   expect_fail "pr-body with Hangul in an HTML comment" env PR_BODY="Part of #12 <!-- $(printf '\352\267\234') -->" bash "$0" pr-body
   expect_pass "pr-body with other non-ASCII text" env PR_BODY="Part of #12 caf$(printf '\303\251') $(printf '\342\200\224') ok" bash "$0" pr-body
+
+  # The 9-item Quality checklist (vws-deploy#394): evidence or "N/A: reason" on every item.
+  local cl="$tmp/checklist.md" i
+  {
+    echo "Part of #394"
+    echo
+    echo "## Quality checklist (required)"
+    echo
+    for ((i = 1; i <= ${#QUALITY_TITLES[@]}; i++)); do
+      echo "- [x] **${QUALITY_TITLES[$((i - 1))]}**: description. Evidence: tests/case-${i}.sh"
+    done
+  } >"$cl"
+  expect_pass "a complete checklist" bash "$0" pr-checklist "$cl"
+  sed 's#Evidence: tests/case-3.sh#Evidence:#' "$cl" >"$tmp/cl-empty.md"
+  expect_fail "a checklist item with no evidence" bash "$0" pr-checklist "$tmp/cl-empty.md"
+  local msg
+  msg=$( (bash "$0" pr-checklist "$tmp/cl-empty.md") 2>&1 >/dev/null || true)
+  [[ $msg == *"3 (Security)"* ]] || die "selftest: an empty checklist item was not named: ${msg}"
+  echo "ok: an empty checklist item is named"
+  sed 's#Evidence: tests/case-7.sh#Evidence: N/A:#' "$cl" >"$tmp/cl-na.md"
+  expect_fail "N/A with no reason" bash "$0" pr-checklist "$tmp/cl-na.md"
+  sed 's#Evidence: tests/case-7.sh#Evidence: N/A: no telemetry in this script#' "$cl" >"$tmp/cl-nareason.md"
+  expect_pass "N/A with a reason" bash "$0" pr-checklist "$tmp/cl-nareason.md"
+  sed -E 's#^- \[x\] (\*\*Observability\*\*.*)$#- [ ] \1#' "$tmp/cl-nareason.md" >"$tmp/cl-unticked.md"
+  expect_pass "an unticked box with N/A and a reason" bash "$0" pr-checklist "$tmp/cl-unticked.md"
+  sed -E 's#^- \[x\] (\*\*Observability\*\*.*)$#- [ ] \1#' "$cl" >"$tmp/cl-unticked-ev.md"
+  expect_fail "an unticked box with evidence but no N/A" bash "$0" pr-checklist "$tmp/cl-unticked-ev.md"
+  sed -E 's#^- \[x\] (\*\*Observability\*\*: description\.) Evidence: tests/case-7\.sh$#- [ ] \1 Evidence: N/A:#' "$cl" >"$tmp/cl-unticked-na.md"
+  expect_fail "an unticked box with N/A and no reason" bash "$0" pr-checklist "$tmp/cl-unticked-na.md"
+  { echo "Part of #394"; echo; echo "## Quality checklist (required)"; echo
+    for i in 1 2 3 4 5 6 7 8 9; do echo "- [x] **Security**: done. Evidence: tests/security.sh"; done; } >"$tmp/cl-nine.md"
+  expect_fail "nine copies of one item" bash "$0" pr-checklist "$tmp/cl-nine.md"
+  msg=$( (bash "$0" pr-checklist "$tmp/cl-nine.md") 2>&1 >/dev/null || true)
+  [[ $msg == *"missing item (Error handling)"* && $msg == *"item (Security) appears 9 times"* ]] ||
+    die "selftest: missing and duplicated items were not named: ${msg}"
+  echo "ok: missing and duplicated checklist items are named"
+  { echo "Part of #394"; echo; echo "<!--"; sed -n '3,$p' "$cl"; echo "-->"; } >"$tmp/cl-mlcomment.md"
+  expect_fail "a checklist inside a multi-line HTML comment" bash "$0" pr-checklist "$tmp/cl-mlcomment.md"
+  awk '/case-5.sh/ { sub(/Evidence: tests\/case-5.sh/, "Evidence: <!--"); print; print "tests/case-5.sh -->"; next } { print }' \
+    "$cl" >"$tmp/cl-mlev.md"
+  expect_fail "evidence in an HTML comment closed on the next line" bash "$0" pr-checklist "$tmp/cl-mlev.md"
+  sed 's#\*\*Idempotency\*\*#**Idempotent**#' "$cl" >"$tmp/cl-unknown.md"
+  expect_fail "an item title that is not a QUALITY.md item" bash "$0" pr-checklist "$tmp/cl-unknown.md"
+  sed 's#Evidence: tests/case-5.sh#Evidence: <!-- fill this in -->#' "$cl" >"$tmp/cl-comment.md"
+  expect_fail "evidence only in an HTML comment" bash "$0" pr-checklist "$tmp/cl-comment.md"
+  { cat "$cl"; echo; echo "## Quality checklist (required)"; echo; echo "- [x] **Error handling**: again. Evidence: x"; } >"$tmp/cl-dup.md"
+  expect_fail "a duplicated checklist section" bash "$0" pr-checklist "$tmp/cl-dup.md"
+  sed -E 's#^- \[x\] (\*\*[^*]+\*\*: description\.) Evidence: tests/case-[0-9]+\.sh$#- [ ] \1 Evidence:#' "$cl" >"$tmp/cl-template.md"
+  expect_fail "the template placeholder left in" bash "$0" pr-checklist "$tmp/cl-template.md"
+  grep -v 'AWS compatibility' "$cl" >"$tmp/cl-short.md"
+  expect_fail "a checklist with eight items" bash "$0" pr-checklist "$tmp/cl-short.md"
+  expect_fail "no checklist section" env PR_BODY="Part of #394" bash "$0" pr-checklist
+
+  # pr-issue names the issue for the AC lint.
+  [[ $(PR_BODY="Part of #394" bash "$0" pr-issue) == "#394" ]] || die "selftest: pr-issue did not read '#394'"
+  [[ $(PR_BODY="Part of acme/repo#7" bash "$0" pr-issue) == "acme/repo#7" ]] || die "selftest: pr-issue did not keep owner/repo"
+  expect_fail "pr-issue without Part of" env PR_BODY="mentions #394" bash "$0" pr-issue
+
   # english: tracked files with Hangul fail unless an allowlist glob with a reason covers them.
   local en="$tmp/en" self
   self=$(readlink -f "$0")
@@ -672,6 +816,17 @@ GH
   git -C "$repo" reset -q --hard "$c5"
   expect_fail "pr-commits on a range git cannot list" bash -c 'cd "$1" && bash "$2" pr-commits no-such-ref HEAD' _ "$repo" "$OLDPWD_SCRIPT"
   expect_pass "pr-commits on an empty clean range" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  # A commit subject has a lowercase type prefix and a local Part of #N (vws-deploy#394).
+  git -C "$repo" switch -q -C prefix "$c5"
+  git -C "$repo" commit -q --allow-empty -m "update the guard" -m "Part of #4"
+  expect_fail "a commit subject without a type prefix" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" reset -q --hard "$c5"
+  git -C "$repo" commit -q --allow-empty -m "ci: no issue named"
+  expect_fail "a commit without Part of #N" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" reset -q --hard "$c5"
+  git -C "$repo" commit -q --allow-empty -m "ci(guard): a scoped type" -m "Part of #4"
+  expect_pass "a scoped type prefix with Part of #N" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" reset -q --hard "$c5"
   # verify-gate: label and a section bound to the head with evidence for every item.
   local h1 h2 ev
   h1=$(printf 'a%.0s' {1..40}); h2=$(printf 'b%.0s' {1..40})
@@ -774,6 +929,8 @@ case "$command_name" in
   agents) cmd_agents "$@" ;;
   pr-base) cmd_pr_base "$@" ;;
   pr-body) cmd_pr_body "$@" ;;
+  pr-checklist) cmd_pr_checklist "$@" ;;
+  pr-issue) cmd_pr_issue "$@" ;;
   rules | judgment) cmd_rules "$@" ;;
   archtest) cmd_archtest "$@" ;;
   verify-gate) cmd_verify_gate "$@" ;;
@@ -784,5 +941,5 @@ case "$command_name" in
   correct) cmd_correct "$@" ;;
   english) cmd_english "$@" ;;
   selftest) cmd_selftest ;;
-  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|verify-gate HEAD LABELS [FILE]|correct [DIR]|english [ALLOWLIST]|selftest>" ;;
+  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|pr-checklist [FILE]|pr-issue [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|verify-gate HEAD LABELS [FILE]|correct [DIR]|english [ALLOWLIST]|selftest>" ;;
 esac
