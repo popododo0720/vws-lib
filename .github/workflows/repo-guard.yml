@@ -42,10 +42,6 @@ jobs:
         run: scripts/guard-agents.sh identity scripts/guard-agents.sh.sha256
       - name: AGENTS.md has the guardrails
         run: scripts/guard-agents.sh agents
-      - name: AGENTS.md has the /correct loop, incident form and label (vws-deploy#448)
-        run: scripts/guard.sh correct
-      - name: guard.sh fails on an empty /correct loop section
-        run: scripts/guard_test.sh
 
   # verify-gate (#249): red unless the PR has the verify-approved label and a comment with a
   # "Verified-by: vws-verify" section that names the current head SHA with evidence for every docs/QUALITY.md

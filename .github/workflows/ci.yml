@@ -64,6 +64,17 @@ jobs:
       - name: sample consumer module builds against the lib
         run: scripts/check-consumer.sh
 
+  # /correct loop guard (vws-deploy#448). Runs here, not in repo-guard.yml, which must stay
+  # byte-identical to vws-deploy main (AGENTS.md rule L6).
+  correct:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: AGENTS.md has the /correct loop, incident form and label
+        run: scripts/guard.sh correct
+      - name: guard.sh fails on an empty /correct loop section
+        run: scripts/guard_test.sh
+
   vendor:
     runs-on: ubuntu-latest
     steps:
