@@ -16,6 +16,9 @@
 #                                           <GUARD_PART_OF_OWNER>/vws-<repo>#N" rewritten to "Part of vws-<repo>#N"
 #   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N, owner/repo#N or an issue URL) and no Hangul
 #   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD has a "<type>: summary" subject and "Part of #N", and passes commit-msg
+#   guard-agents.sh pr-size BASE HEAD       BASE...HEAD changes at most the .github/pr-size.conf limit (800) of
+#                                           lines outside generated, vendored, lockfile and testdata paths,
+#                                           unless $PR_BODY has a "Size-exception: <reason>" line (see cmd_pr_size)
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
 #   guard-agents.sh verify-gate HEAD LABELS [FILE]
 #                                           the pull request is verify-approved for HEAD: LABELS (comma list) has
@@ -504,6 +507,101 @@ cmd_pr_commits() {
     printf '%s\n' "$body" >"$tmp"
     (cmd_commit_msg "$tmp" stored) 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue, names #0 or has Hangul; write English with 'Part of #N'"
   done
+}
+
+# PR size (#401). Added plus deleted lines in BASE...HEAD (git diff --numstat with rename detection, as the PR
+# "Files changed" view counts them; binary files count 0) must be at most the limit, apart from these paths:
+#   generated  any file named *.pb.go
+#   vendored   any path under a vendor/ or third_party/ directory, at any depth
+#   lockfiles  any file named go.sum, package-lock.json or pnpm-lock.yaml
+#   testdata   any path under a testdata/ directory, at any depth
+# The limit is the one "limit=N" line of .github/pr-size.conf in the BASE commit, so a PR cannot raise its
+# own limit; a base without that file uses 800. A PR body line "Size-exception: <reason>" outside HTML
+# comments and code fences lets an oversized PR pass with a warning in the job summary. The line starts the
+# line, is spelled exactly so, and its reason has at least 10 characters with a letter and is not a
+# <placeholder>; any other line that looks like a size exception fails the check, even under the limit.
+PR_SIZE_CONF=.github/pr-size.conf
+PR_SIZE_DEFAULT=800
+PR_SIZE_REASON_MIN=10
+
+pr_size_excluded() {
+  case "/$1" in
+    */vendor/* | */third_party/* | */testdata/*) return 0 ;;
+  esac
+  case "${1##*/}" in
+    *.pb.go | go.sum | package-lock.json | pnpm-lock.yaml) return 0 ;;
+  esac
+  return 1
+}
+
+# The reasons of the visible Size-exception lines in the PR body, one per line; dies on a malformed one.
+pr_size_exceptions() {
+  local line reason
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    [[ ${line,,} =~ ^[[:space:]]*size[-[:space:]_]*exception[[:space:]]*: ]] || continue
+    reason=
+    if [[ $line =~ ^Size-exception:\ (.*)$ ]]; then
+      reason=${BASH_REMATCH[1]}
+      reason=${reason#"${reason%%[![:space:]]*}"}
+      reason=${reason%"${reason##*[![:space:]]}"}
+    fi
+    if [[ ${#reason} -lt $PR_SIZE_REASON_MIN || ! $reason =~ [[:alpha:]] || $reason =~ ^\<.*\>$ ]]; then
+      die "pr-size: malformed '${line}'; write 'Size-exception: <reason>' at the start of a line with a real reason (at least ${PR_SIZE_REASON_MIN} characters)"
+    fi
+    echo "$reason"
+  done < <(visible_text)
+}
+
+cmd_pr_size() {
+  local base=${1:-} head=${2:-} conf line limit=$PR_SIZE_DEFAULT rec add del path tmp counted=0 excluded=0 reasons
+  [[ -n $base && -n $head ]] || die "pr-size: needs BASE and HEAD"
+  git rev-parse -q --verify "${base}^{commit}" >/dev/null || die "pr-size: ${base} is not a commit here"
+  git rev-parse -q --verify "${head}^{commit}" >/dev/null || die "pr-size: ${head} is not a commit here"
+  if git cat-file -e "${base}:${PR_SIZE_CONF}" 2>/dev/null; then
+    conf=$(git show "${base}:${PR_SIZE_CONF}") || die "pr-size: cannot read ${PR_SIZE_CONF} at ${base}"
+    limit=
+    while IFS= read -r line; do
+      [[ -z ${line//[[:space:]]/} || $line == \#* ]] && continue
+      if [[ -n $limit || ! $line =~ ^limit=([1-9][0-9]*)$ ]]; then
+        die "pr-size: ${PR_SIZE_CONF} at ${base:0:12} needs exactly one 'limit=N' line (N >= 1); got '${line}'"
+      fi
+      limit=${BASH_REMATCH[1]}
+    done <<<"$conf"
+    [[ -n $limit ]] || die "pr-size: ${PR_SIZE_CONF} at ${base:0:12} has no 'limit=N' line"
+  fi
+  reasons=$(pr_size_exceptions <<<"${PR_BODY:-}") || exit 1
+  tmp=$(mktemp)
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" RETURN
+  git diff --numstat -z -M "${base}...${head}" >"$tmp" || die "pr-size: git diff ${base}...${head} failed"
+  while IFS= read -r -d '' rec; do
+    add=${rec%%$'\t'*}
+    rec=${rec#*$'\t'}
+    del=${rec%%$'\t'*}
+    path=${rec#*$'\t'}
+    if [[ -z $path ]]; then
+      IFS= read -r -d '' _ || true
+      IFS= read -r -d '' path || true
+    fi
+    [[ $add == - ]] && add=0
+    [[ $del == - ]] && del=0
+    if pr_size_excluded "$path"; then
+      excluded=$((excluded + add + del))
+    else
+      counted=$((counted + add + del))
+    fi
+  done <"$tmp"
+  echo "pr-size: ${counted} changed lines (limit ${limit}, ${excluded} excluded)"
+  [[ $counted -le $limit ]] && return 0
+  if [[ -z $reasons ]]; then
+    die "pr-size: ${counted} changed lines is over the limit ${limit} (generated, vendored, lockfile and testdata paths excluded). Split the PR, or add a 'Size-exception: <reason>' line to the PR body"
+  fi
+  reasons=${reasons//$'\n'/; }
+  echo "::warning::pr-size: ${counted} changed lines is over the limit ${limit}; Size-exception: ${reasons}"
+  if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
+    printf '### PR size\n\n%s changed lines, over the limit %s. Size-exception: %s\n' "$counted" "$limit" "$reasons" >>"$GITHUB_STEP_SUMMARY"
+  fi
 }
 
 pr_count() {
@@ -1123,6 +1221,24 @@ GH
     "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
   expect_pass "the vws-verify identity on the same account (known gap)" env GUARD_VERIFY_EXCLUDE=verifier GUARD_VERIFY_IDENTITY=verifier \
     GUARD_VERIFY_LABELER=verifier "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
+  # pr-size (#401): a throwaway repo with a base and a head commit.
+  local sz="$tmp/size" sz_base
+  git init -q -b main "$sz"
+  sz_commit() { git -C "$sz" add -A && git -C "$sz" -c user.name=t -c user.email=t@e commit -q --allow-empty -m "$1"; }
+  sz_lines() { mkdir -p "$(dirname "$sz/$2")" && seq 1 "$1" >"$sz/$2"; }
+  sz_run() { (cd "$sz" && PR_BODY=$1 GITHUB_STEP_SUMMARY='' cmd_pr_size "$sz_base" HEAD); }
+  mkdir -p "$sz/.github" && echo "limit=800" >"$sz/.github/pr-size.conf" && sz_commit base
+  sz_base=$(git -C "$sz" rev-parse HEAD)
+  sz_lines 10 a.txt && sz_commit small
+  expect_pass "pr-size under the limit" sz_run "Part of #1"
+  sz_lines 900 vendor/x.go && sz_lines 900 api/x.pb.go && sz_lines 900 go.sum && sz_lines 900 pkg/testdata/x && sz_commit gen
+  expect_pass "pr-size over the limit only in excluded paths" sz_run "Part of #1"
+  sz_lines 801 b.txt && sz_commit big
+  expect_fail "pr-size over the limit" sz_run "Part of #1"
+  expect_pass "pr-size with a Size-exception" sz_run $'Part of #1\nSize-exception: regenerated client after the proto bump'
+  expect_fail "pr-size with an empty Size-exception reason" sz_run $'Part of #1\nSize-exception:'
+  expect_fail "pr-size with a placeholder Size-exception reason" sz_run $'Part of #1\nSize-exception: <reason>'
+  expect_fail "pr-size with a Size-exception hidden in a comment" sz_run $'Part of #1\n<!-- Size-exception: regenerated client after the proto bump -->'
   echo "selftest passed"
 }
 
@@ -1135,6 +1251,7 @@ case "$command_name" in
   pr-checklist) cmd_pr_checklist "$@" ;;
   pr-issue) cmd_pr_issue "$@" ;;
   pr-normalize) cmd_pr_normalize "$@" ;;
+  pr-size) cmd_pr_size "$@" ;;
   rules | judgment) cmd_rules "$@" ;;
   archtest) cmd_archtest "$@" ;;
   verify-gate) cmd_verify_gate "$@" ;;
@@ -1145,5 +1262,5 @@ case "$command_name" in
   correct) cmd_correct "$@" ;;
   english) cmd_english "$@" ;;
   selftest) cmd_selftest ;;
-  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|pr-checklist [FILE]|pr-issue [FILE]|pr-normalize [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|verify-gate HEAD LABELS [FILE]|correct [DIR]|english [ALLOWLIST]|selftest>" ;;
+  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|pr-checklist [FILE]|pr-issue [FILE]|pr-normalize [FILE]|pr-size BASE HEAD|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|verify-gate HEAD LABELS [FILE]|correct [DIR]|english [ALLOWLIST]|selftest>" ;;
 esac
