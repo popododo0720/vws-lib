@@ -71,4 +71,3 @@ A deterministic script (the factory orchestrator in vws-deploy `docs/factory-orc
 - the pull request is not labeled `blocked`.
 
 `ORCHESTRATE_MERGE=apply` is approved only under these conditions. The lead (dr eggbot) is woken only for a decision or a failure (issue scope, real conflicts, a failed check), not for a routine push, pull request or merge. Guardrails 1, 4 and 2 still hold: the author bot is never the verifier, nothing pushes to main, and every pull request body has `Part of #N` with no closing keyword.
-
