@@ -20,4 +20,7 @@ const (
 	defaultRetryElapsed     = 1 * time.Minute
 	defaultShutdownTimeout  = 5 * time.Second
 	defaultErrorLogInterval = 10 * time.Second
+	// prometheusScrapeTimeout bounds one /metrics request; a slow observable callback must not
+	// hold a scrape connection open forever.
+	prometheusScrapeTimeout = 10 * time.Second
 )

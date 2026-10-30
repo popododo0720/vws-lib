@@ -33,7 +33,8 @@ type Config struct {
 	Sampler    string
 	SamplerArg float64
 
-	// The exporter per signal: "otlp" or "none".
+	// The exporter per signal: "otlp" or "none". MetricsExporter may also be "prometheus": an
+	// opt-in pull endpoint, /metrics on HealthAddr, instead of OTLP push.
 	TracesExporter  string
 	MetricsExporter string
 	LogsExporter    string
@@ -60,7 +61,7 @@ type Config struct {
 	ErrorLogEvery   time.Duration
 
 	// MetricReaders and SpanProcessors are added to the providers next to the OTLP exporters.
-	// They are the hook for a Prometheus pull reader later and for tests (ManualReader, span recorder).
+	// They are the hook for tests (ManualReader, span recorder) and extra readers.
 	MetricReaders  []sdkmetric.Reader
 	SpanProcessors []sdktrace.SpanProcessor
 
@@ -229,12 +230,19 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("%s=%q: want json or text", EnvLogFormat, c.LogFormat)
 	}
-	for name, v := range map[string]string{
-		EnvTracesExporter: c.TracesExporter, EnvMetricsExporter: c.MetricsExporter, EnvLogsExporter: c.LogsExporter,
-	} {
+	for name, v := range map[string]string{EnvTracesExporter: c.TracesExporter, EnvLogsExporter: c.LogsExporter} {
 		if v != "otlp" && v != "none" {
 			return fmt.Errorf("%s=%q: this version supports otlp and none", name, v)
 		}
+	}
+	switch c.MetricsExporter {
+	case "otlp", "none":
+	case "prometheus":
+		if c.HealthAddr == "" {
+			return fmt.Errorf("%s=prometheus serves /metrics on %s, which is empty", EnvMetricsExporter, EnvHealthAddr)
+		}
+	default:
+		return fmt.Errorf("%s=%q: this version supports otlp, prometheus and none", EnvMetricsExporter, c.MetricsExporter)
 	}
 	switch c.Sampler {
 	case "always_on", "always_off", "traceidratio", "parentbased_always_on", "parentbased_always_off", "parentbased_traceidratio":
