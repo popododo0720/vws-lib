@@ -1,6 +1,6 @@
 # Copy unchanged to every vws-* repo with repo-guard.yml (see docs/factory-orchestrator.md, vws-deploy#397).
 # Keeps the needs-verify label on a PR exactly while it waits for vws-verify: open, not a draft, base main,
-# no verify-approved, no vws-verify FAIL verdict on its head (vws-deploy#440), and every check on its head
+# no verify-approved, not blocked, held or do-not-merge (vws-deploy#487), no vws-verify FAIL verdict on its head (vws-deploy#440), and every check on its head
 # green except verify-gate and vws-verify (which wait for the verdict by design). The orchestrator's verify
 # wake (Rule A) counts only labeled PRs, so a head verify already failed must not wake it again.
 # It reads the PR, its check runs and commit statuses through the API and writes only labels: it checks
@@ -48,11 +48,69 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          # Checks that wait for the verdict, plus this job's own check on pull_request events.
-          skip="verify-gate vws-verify needs-verify"
+          # Inlined from .github/gh-api-retry.sh. This job checks out nothing, so it cannot source that file.
+          # Each gh api retries an installation or secondary rate limit, then fails closed.
+          # BEGIN gh-api-retry
+          gh_api_rate_limited() {
+            local file=$1
+            grep -E -q 'API rate limit exceeded|secondary rate limit|abuse detection mechanism|\(HTTP 429\)' "$file" && return 0
+            jq -e '[.errors[]? | select(.type == "RATE_LIMITED")] | length > 0' "$file" >/dev/null 2>&1
+          }
+
+          gh_api_retry() {
+            local attempts=${GH_API_RETRY_ATTEMPTS:-5}
+            local delay=${GH_API_RETRY_DELAY:-5}
+            local cap=${GH_API_RETRY_DELAY_CAP:-40}
+            local n=1 rc out err limited
+            [[ $attempts =~ ^[1-9][0-9]*$ ]] || attempts=5
+            [[ $delay =~ ^[0-9]+$ ]] || delay=5
+            [[ $cap =~ ^[1-9][0-9]*$ ]] || cap=40
+            err=$(mktemp)
+            while true; do
+              rc=0
+              limited=0
+              out=$(gh api "$@" 2>"$err") || rc=$?
+              if [[ $rc -ne 0 ]]; then
+                printf '%s\n' "$out" >>"$err"
+              elif printf '%s' "$out" | jq -e '[.errors[]? | select(.type == "RATE_LIMITED")] | length > 0' >/dev/null 2>&1; then
+                printf '%s\n' "$out" >>"$err"
+                rc=1
+                limited=1
+              else
+                # Command substitution dropped the trailing newlines. Put one back when there is a body,
+                # and write nothing when the call succeeded with an empty body. A blank line is a row to
+                # the verify-queue awk (an empty commit-status list would look pending).
+                if [[ -n $out ]]; then
+                  printf '%s\n' "$out"
+                fi
+                rm -f "$err"
+                return 0
+              fi
+              if [[ $limited -eq 0 ]] && gh_api_rate_limited "$err"; then
+                limited=1
+              fi
+              if [[ $limited -eq 0 || $n -ge $attempts ]]; then
+                cat "$err" >&2
+                rm -f "$err"
+                return "$rc"
+              fi
+              echo "gh api: rate limit, retry ${n}/$((attempts - 1)) in ${delay}s" >&2
+              sleep "$delay"
+              n=$((n + 1))
+              if [[ $((delay * 2)) -gt $cap ]]; then
+                delay=$cap
+              else
+                delay=$((delay * 2))
+              fi
+            done
+          }
+          # END gh-api-retry
+          # Checks that wait for the verdict, plus this job's own check on pull_request events. "|"-separated:
+          # repo-guard.yml calls the gate, which reports as "gate / verify-gate" next to its bare shim (#402).
+          skip="verify-gate|gate / verify-gate|vws-verify|needs-verify"
           unlabel() {
             # A label that is already gone (HTTP 404) is the wanted state; other errors fail.
-            if out=$(gh api -X DELETE "repos/${REPO}/issues/$1/labels/needs-verify" 2>&1); then
+            if out=$(gh_api_retry -X DELETE "repos/${REPO}/issues/$1/labels/needs-verify" 2>&1); then
               echo "#$1: needs-verify removed ($2)"
             elif [[ $out == *"HTTP 404"* ]]; then
               echo "#$1: no needs-verify label ($2)"
@@ -62,28 +120,143 @@ jobs:
             fi
           }
           # vws-deploy#440: a FAIL verdict on this exact head keeps the PR out of the queue until a new push.
+          # Reads are newest-first GraphQL (bot reviews, then verdict comments) and stop at the newest
+          # verdict for this head. They are not a walk of every review and comment. A failed read fails closed.
           # The newest verdict on the head counts: a vws-verify[bot] review (CHANGES_REQUESTED = FAIL,
           # APPROVED = PASS) or a "# <repo>#N @ <sha>\nResult: FAIL|PASS" comment by vws-verify[bot] or a
           # repo member (the bots share one account). A vws-verify check run that failed on the head also counts.
           # Prints the FAIL source, or nothing. Reads only; a failed read fails the job (fail closed).
           head_fail() {
+            # Newest verdict on this head only. Bot reviews and issue comments are read newest-first and stop
+            # at the first match, so a long history is not listed. A failed read fails the job (fail closed).
             local n=$1 sha=$2 target="${REPO#*/}#$1" verdicts
-            verdicts=$( {
-              gh api --paginate "repos/${REPO}/pulls/${n}/reviews?per_page=100" | jq -rs --arg sha "$sha" '
-                (add // [])[] | select(.user.login == "vws-verify[bot]" and .commit_id == $sha and .submitted_at != null
-                  and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))
-                | [.submitted_at, (if .state == "CHANGES_REQUESTED" then "FAIL" else "PASS" end), "review \(.id)"] | @tsv' || exit 1
-              gh api --paginate "repos/${REPO}/issues/${n}/comments?per_page=100" | jq -rs --arg sha "$sha" --arg target "$target" '
-                (add // [])[] | select(.user.login == "vws-verify[bot]" or (.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")))
-                | ((.body // "") | gsub("\r\n"; "\n") | sub("\\A\\s+"; "")) as $b
-                | ($b | capture("\\A#\\s+(?<t>[A-Za-z0-9._-]+#[0-9]+)\\s+@\\s+(?<s>[0-9a-f]{40})\\s*\n+Result:\\s*(?<r>PASS|FAIL)\\b")? ) as $m
-                | select($m != null and $m.t == $target and $m.s == $sha)
-                | [.created_at, $m.r, "comment \(.id)"] | @tsv' || exit 1
-            } | sort | tail -n 1) || return 1
+            local owner=${REPO%%/*} rname=${REPO#*/}
+            local review_tsv="" comment_tsv="" review_done=0 comment_done=0
+            local review_cursor="" comment_cursor="" resp pages=0
+            local fetched_reviews fetched_comments page_review page_comment next
+            local -a args
+            local vq_both vq_reviews vq_comments review_jq comment_jq
+            vq_both='query($owner:String!, $name:String!, $number:Int!, $reviewCursor:String, $commentCursor:String) {
+            repository(owner:$owner, name:$name) {
+              pullRequest(number:$number) {
+                reviews(last:100, before:$reviewCursor, author:"vws-verify[bot]") {
+                  pageInfo { hasPreviousPage startCursor }
+                  nodes { databaseId submittedAt state commit { oid } author { __typename login } }
+                }
+                comments(last:100, before:$commentCursor) {
+                  pageInfo { hasPreviousPage startCursor }
+                  nodes { databaseId createdAt author { __typename login } authorAssociation body }
+                }
+              }
+            }
+          }
+          # vq-verdicts'
+            vq_reviews='query($owner:String!, $name:String!, $number:Int!, $reviewCursor:String!) {
+            repository(owner:$owner, name:$name) {
+              pullRequest(number:$number) {
+                reviews(last:100, before:$reviewCursor, author:"vws-verify[bot]") {
+                  pageInfo { hasPreviousPage startCursor }
+                  nodes { databaseId submittedAt state commit { oid } author { __typename login } }
+                }
+              }
+            }
+          }
+          # vq-reviews'
+            vq_comments='query($owner:String!, $name:String!, $number:Int!, $commentCursor:String!) {
+            repository(owner:$owner, name:$name) {
+              pullRequest(number:$number) {
+                comments(last:100, before:$commentCursor) {
+                  pageInfo { hasPreviousPage startCursor }
+                  nodes { databaseId createdAt author { __typename login } authorAssociation body }
+                }
+              }
+            }
+          }
+          # vq-comments'
+            # GraphQL Bot.login is "vws-verify". The review author argument and this filter use "vws-verify[bot]".
+            gh_login='def gh_login: if .__typename == "Bot" and ((.login // "") | length) > 0 and ((.login | endswith("[bot]")) | not) then .login + "[bot]" else (.login // "") end;'
+            review_jq="${gh_login}"'[.data.repository.pullRequest.reviews.nodes[]?
+              | select((.author | gh_login) == "vws-verify[bot]" and .commit.oid == $sha and .submittedAt != null
+                and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))]
+              | last
+              | if . == null then "" else
+                [.submittedAt, (if .state == "CHANGES_REQUESTED" then "FAIL" else "PASS" end), "review \(.databaseId)"] | @tsv
+              end'
+            comment_jq="${gh_login}"'[.data.repository.pullRequest.comments.nodes[]?
+              | {user:{login:(.author | gh_login)}, author_association:.authorAssociation, body:(.body // ""), created_at:.createdAt, id:.databaseId}
+              | select(.user.login == "vws-verify[bot]" or (.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")))
+              | ((.body // "") | gsub("\r\n"; "\n") | sub("\\A\\s+"; "")) as $b
+              | ($b | capture("\\A#\\s+(?<t>[A-Za-z0-9._-]+#[0-9]+)\\s+@\\s+(?<s>[0-9a-f]{40})\\s*\n+Result:\\s*(?<r>PASS|FAIL)\\b")? ) as $m
+              | select($m != null and $m.t == $target and $m.s == $sha)
+              | [.created_at, $m.r, "comment \(.id)"] | @tsv]
+              | last // ""'
+            while [[ $review_done -eq 0 || $comment_done -eq 0 ]]; do
+              pages=$((pages + 1))
+              if [[ $pages -gt 20 ]]; then
+                echo "verify-queue: verdict pages exceeded for #${n}" >&2
+                return 1
+              fi
+              fetched_reviews=0
+              fetched_comments=0
+              if [[ $review_done -eq 0 && $comment_done -eq 0 ]]; then
+                args=(graphql -f query="$vq_both" -f owner="$owner" -f name="$rname" -F number="$n")
+                if [[ -n $review_cursor ]]; then args+=(-f "reviewCursor=$review_cursor"); else args+=(-F reviewCursor=null); fi
+                if [[ -n $comment_cursor ]]; then args+=(-f "commentCursor=$comment_cursor"); else args+=(-F commentCursor=null); fi
+                fetched_reviews=1
+                fetched_comments=1
+              elif [[ $review_done -eq 0 ]]; then
+                args=(graphql -f query="$vq_reviews" -f owner="$owner" -f name="$rname" -F number="$n" -f "reviewCursor=$review_cursor")
+                fetched_reviews=1
+              else
+                args=(graphql -f query="$vq_comments" -f owner="$owner" -f name="$rname" -F number="$n" -f "commentCursor=$comment_cursor")
+                fetched_comments=1
+              fi
+              resp=$(gh_api_retry "${args[@]}") || return 1
+              if jq -e '((.errors // []) | length) > 0 or .data.repository.pullRequest == null' >/dev/null <<<"$resp"; then
+                echo "verify-queue: verdict read failed for #${n}" >&2
+                return 1
+              fi
+              if [[ $fetched_reviews -eq 1 ]]; then
+                jq -e '.data.repository.pullRequest.reviews != null' >/dev/null <<<"$resp" || return 1
+                page_review=$(jq -r --arg sha "$sha" "$review_jq" <<<"$resp") || return 1
+                if [[ -n $page_review ]]; then
+                  review_tsv=$page_review
+                  review_done=1
+                elif [[ $(jq -r '.data.repository.pullRequest.reviews.pageInfo.hasPreviousPage' <<<"$resp") == true ]]; then
+                  next=$(jq -r '.data.repository.pullRequest.reviews.pageInfo.startCursor // ""' <<<"$resp")
+                  [[ -n $next && $next != null && $next != "$review_cursor" ]] || {
+                    echo "verify-queue: review cursor did not advance for #${n}" >&2
+                    return 1
+                  }
+                  review_cursor=$next
+                else
+                  review_done=1
+                fi
+              fi
+              if [[ $fetched_comments -eq 1 ]]; then
+                jq -e '.data.repository.pullRequest.comments != null' >/dev/null <<<"$resp" || return 1
+                page_comment=$(jq -r --arg sha "$sha" --arg target "$target" "$comment_jq" <<<"$resp") || return 1
+                if [[ -n $page_comment ]]; then
+                  comment_tsv=$page_comment
+                  comment_done=1
+                elif [[ $(jq -r '.data.repository.pullRequest.comments.pageInfo.hasPreviousPage' <<<"$resp") == true ]]; then
+                  next=$(jq -r '.data.repository.pullRequest.comments.pageInfo.startCursor // ""' <<<"$resp")
+                  [[ -n $next && $next != null && $next != "$comment_cursor" ]] || {
+                    echo "verify-queue: comment cursor did not advance for #${n}" >&2
+                    return 1
+                  }
+                  comment_cursor=$next
+                else
+                  comment_done=1
+                fi
+              fi
+            done
+            verdicts=$(printf '%s\n%s\n' "$review_tsv" "$comment_tsv" | sed '/^$/d' | sort | tail -n 1)
             if [[ $verdicts == *$'\tFAIL\t'* ]]; then echo "verdict ${verdicts##*$'\t'}"; return; fi
             awk -F'\t' '$1 == "vws-verify" && $2 + 0 > id { id = $2 + 0; r = $3 "/" $4 }
               END { if (r == "completed/failure") print "vws-verify check failure" }' "$tmp/checks"
           }
+
           if [[ $EVENT == pull_request && $ACTION == synchronize ]]; then
             unlabel "$PRS" "new push"
             exit 0
@@ -91,7 +264,7 @@ jobs:
           [[ -n ${PRS// /} ]] || { echo "no same-repo PR for this run"; exit 0; }
           tmp=$(mktemp -d)
           for n in $PRS; do
-            IFS=$'\t' read -r state draft base sha labels < <(gh api "repos/${REPO}/pulls/${n}" \
+            IFS=$'\t' read -r state draft base sha labels < <(gh_api_retry "repos/${REPO}/pulls/${n}" \
               --jq '[.state, (.draft | tostring), .base.ref, .head.sha, ([.labels[].name] | join(","))] | @tsv')
             if [[ $sha != "$HEAD_SHA" ]]; then
               echo "#$n: head moved to ${sha:0:7}; the runs for the new head decide"
@@ -101,12 +274,17 @@ jobs:
               if [[ ",$labels," == *",needs-verify,"* ]]; then unlabel "$n" "not waiting for verify"; fi
               continue
             fi
-            gh api --paginate "repos/${REPO}/commits/${sha}/check-runs?per_page=100" \
+            # vws-deploy#487 AC7: a parked PR (blocked, hold, do-not-merge) only loses the label (PR #483).
+            if [[ ",$labels," == *",blocked,"* || ",$labels," == *",hold,"* || ",$labels," == *",do-not-merge,"* ]]; then
+              if [[ ",$labels," == *",needs-verify,"* ]]; then unlabel "$n" "parked"; else echo "#$n: parked; no label"; fi
+              continue
+            fi
+            gh_api_retry --paginate "repos/${REPO}/commits/${sha}/check-runs?per_page=100" \
               --jq '.check_runs[] | [.name, (.id | tostring), .status, (.conclusion // "")] | @tsv' >"$tmp/checks"
-            gh api "repos/${REPO}/commits/${sha}/status" --jq '.statuses[] | [.context, .state] | @tsv' >"$tmp/statuses"
+            gh_api_retry "repos/${REPO}/commits/${sha}/status" --jq '.statuses[] | [.context, .state] | @tsv' >"$tmp/statuses"
             # The newest run per check name counts (a rerun supersedes a failed attempt).
             verdict=$(awk -F'\t' -v skip="$skip" '
-              BEGIN { n = split(skip, s, " "); for (i = 1; i <= n; i++) sk[s[i]] = 1 }
+              BEGIN { n = split(skip, s, "|"); for (i = 1; i <= n; i++) sk[s[i]] = 1 }
               FILENAME == ARGV[1] { if (!($1 in sk) && (!($1 in id) || $2 + 0 > id[$1])) { id[$1] = $2 + 0; st[$1] = $3; co[$1] = $4 }; next }
               !($1 in sk) { seen++; if ($2 == "failure" || $2 == "error") red = red " " $1; else if ($2 != "success") pend = pend " " $1 }
               END {
@@ -125,7 +303,7 @@ jobs:
                   echo "#$n@${sha:0:7}: FAIL on this head ($fail); a new push re-enters the queue"
                   if [[ ",$labels," == *",needs-verify,"* ]]; then unlabel "$n" "verify FAIL on this head"; fi
                 elif [[ ",$labels," != *",needs-verify,"* ]]; then
-                  gh api -X POST "repos/${REPO}/issues/${n}/labels" -f "labels[]=needs-verify" >/dev/null
+                  gh_api_retry -X POST "repos/${REPO}/issues/${n}/labels" -f "labels[]=needs-verify" >/dev/null
                   echo "#$n: needs-verify added"
                 fi ;;
               red*)
