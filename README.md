@@ -42,7 +42,7 @@ linters:
               desc: use vws-lib/obs/report
 ```
 
-Differences from the design text: `obs/log`, `obs/trace`, and `obs/metric` are files of package `obs`, not packages. The `vws.rpc.*` and `vws.http.*` metrics come from vws-lib's own instruments, not from the instrumentation libraries' default metrics, so their names do not move with those libraries. `OTEL_*_EXPORTER` accepts `otlp` and `none` only.
+Differences from the design text: `obs/log`, `obs/trace`, and `obs/metric` are files of package `obs`, not packages. The `vws.rpc.*` and `vws.http.*` metrics come from vws-lib's own instruments, not from the instrumentation libraries' default metrics, so their names do not move with those libraries. `OTEL_TRACES_EXPORTER` and `OTEL_LOGS_EXPORTER` accept `otlp` and `none` only. `OTEL_METRICS_EXPORTER` also accepts `prometheus`.
 
 ## Environment variables
 
@@ -54,7 +54,11 @@ Services read only these. Standard OpenTelemetry and Sentry names come first. `V
 | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, `SENTRY_SAMPLE_RATE` | Sentry is on only when `SENTRY_DSN` is set. |
 | `VWS_LOG_LEVEL` | `debug`, `info`, `warn`, or `error`. Default `info`. |
 | `VWS_LOG_FORMAT` | `json` (default) or `text` for local development. |
-| `VWS_HEALTH_ADDR` | Address for `/healthz` and `/readyz`. Empty means off. |
+| `VWS_HEALTH_ADDR` | Address for `/healthz` and `/readyz`, and `/metrics` when `OTEL_METRICS_EXPORTER=prometheus`. Empty means off. |
+
+## Prometheus /metrics (opt-in)
+
+`OTEL_METRICS_EXPORTER=prometheus` serves every `vws.*` instrument in Prometheus text format on `/metrics` at `VWS_HEALTH_ADDR`, in place of OTLP metric push. Names use `_` for `.`, counters end in `_total` and second histograms in `_seconds` (`vws.rpc.server.requests` is `vws_rpc_server_requests_total`, `vws.rpc.server.duration` is `vws_rpc_server_duration_seconds`). Only `vws_*` series are served: `target_info` and the scope labels are off. Setup fails when `VWS_HEALTH_ADDR` is empty. Traces and logs still follow `OTEL_TRACES_EXPORTER` and `OTEL_LOGS_EXPORTER`.
 
 The full table and defaults are in section 4 of the design issue. Secrets (headers, DSN) are injected from Secrets, never written in values files.
 

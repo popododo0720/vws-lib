@@ -3,9 +3,10 @@
 //	shutdown, err := obs.Setup(ctx, obs.ForService("compute"))
 //
 // Setup reads only the standard OTEL_* and SENTRY_* variables and VWS_LOG_LEVEL, VWS_LOG_FORMAT,
-// VWS_HEALTH_ADDR (names.go). With OTEL_EXPORTER_OTLP_ENDPOINT empty, or OTEL_SDK_DISABLED=true,
-// no exporter is created and the instrumentation calls do nothing visible; the JSON log on stdout
-// stays. Defaults are in defaults.go, names in names.go.
+// VWS_HEALTH_ADDR (names.go). OTEL_METRICS_EXPORTER=prometheus serves the metrics as vws_* on
+// /metrics at VWS_HEALTH_ADDR instead of pushing them. With OTEL_EXPORTER_OTLP_ENDPOINT empty,
+// or OTEL_SDK_DISABLED=true, no OTLP exporter is created and the instrumentation calls do
+// nothing visible; the JSON log on stdout stays. Defaults are in defaults.go, names in names.go.
 //
 // Design: https://github.com/popododo0720/vws-deploy/issues/42.
 package obs
@@ -15,15 +16,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -90,6 +95,20 @@ func Setup(ctx context.Context, opts ...Option) (shutdown func(context.Context) 
 		mpOpts = append(mpOpts, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp,
 			sdkmetric.WithInterval(cfg.MetricInterval), sdkmetric.WithTimeout(cfg.ExportTimeout))))
 	}
+	var metricsHandler http.Handler
+	if cfg.MetricsExporter == "prometheus" {
+		// A registry per Setup, not the client_golang global: a second Setup in the same process
+		// would otherwise fail with a duplicate registration.
+		reg := prometheus.NewRegistry()
+		exp, err := otelprom.New(otelprom.WithRegisterer(reg), otelprom.WithoutTargetInfo(), otelprom.WithoutScopeInfo())
+		if err != nil {
+			return fail(fmt.Errorf("prometheus exporter: %w", err))
+		}
+		mpOpts = append(mpOpts, sdkmetric.WithReader(exp))
+		metricsHandler = promhttp.HandlerFor(reg, promhttp.HandlerOpts{
+			ErrorHandling: promhttp.ContinueOnError, Timeout: prometheusScrapeTimeout,
+		})
+	}
 	for _, r := range cfg.MetricReaders {
 		mpOpts = append(mpOpts, sdkmetric.WithReader(r))
 	}
@@ -140,7 +159,14 @@ func Setup(ctx context.Context, opts ...Option) (shutdown func(context.Context) 
 
 	// Health server and SIGTERM.
 	h := health.Default()
-	_, stopHealth, err := health.Serve(ctx, cfg.HealthAddr, h)
+	var served http.Handler = h
+	if metricsHandler != nil {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", metricsHandler)
+		mux.Handle("/", h)
+		served = mux
+	}
+	_, stopHealth, err := health.Serve(ctx, cfg.HealthAddr, served)
 	if err != nil {
 		return fail(fmt.Errorf("obs health: %w", err))
 	}
