@@ -15,6 +15,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+      - name: Layer rules and Judgment count
+        run: scripts/guard-agents.sh archtest
       - run: go vet ./...
       - run: go test -race ./...
 

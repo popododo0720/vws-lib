@@ -4,17 +4,18 @@ This repository holds only the Go library shared by the VWS services (`obs`, `er
 
 ## Rules
 
-| ID | Rule | Structure | Check |
-| --- | --- | --- | --- |
-| L1 | A PR targets main and its body has `Part of #N` and no closing keyword; CI reports commits that reached main without a PR. AGENTS.md has Insider-risk guardrails 1-7 | `.github/workflows/repo-guard.yml` `.github/workflows/direct-push-watch.yml` `scripts/guard-agents.sh` | `scripts/guard-agents.sh agents` |
-| L2 | Do not use Cursor cloud agents | `AGENTS.md` | Judgment |
-| L3 | This module does not import vws-proto or the service repos (compute, storage, network, console-api). Dependencies point one way: service → lib | `go.mod` `scripts/check-imports.sh` | `scripts/check-imports.sh` (the CI `imports` job) |
-| L4 | Code follows gofmt and goimports and passes the linters in `.golangci.yml`. The `std-error-handling` preset is not used | `.golangci.yml` | CI `golangci-lint` v2.14.0 |
-| L5 | `go vet ./...` and `go test -race ./...` pass | `.github/workflows/ci.yml` | CI |
-| L6 | The three guard files (`repo-guard.yml`, `direct-push-watch.yml`, `scripts/guard-agents.sh`) are byte-identical to vws-deploy main. Do not edit them in this repository | - | Judgment (compare with `sha256sum`) |
-| L7 | The repo is English only (see "English only"). Hangul is allowed only in files `.github/english-allowlist` lists with a reason | `.github/english-allowlist` `scripts/check-english.sh` | `scripts/check-english.sh files` (the CI `english` job) |
+| Rule | Enforcer |
+| --- | --- |
+| L1. A PR targets main and its body has `Part of #N` and no closing keyword; CI reports commits that reached main without a PR. AGENTS.md has Insider-risk guardrails 1-7. Structure: `.github/workflows/repo-guard.yml`, `.github/workflows/direct-push-watch.yml`, `scripts/guard-agents.sh`. | `scripts/guard-agents.sh agents`; CI `pr-hygiene` (`pr-base`, `pr-body`, `pr-commits`); `push-watch` (CI `direct-push-watch`) |
+| L2. Do not use Cursor cloud agents. Structure: `AGENTS.md`. | Judgment |
+| L3. This module does not import vws-proto or the service repos (compute, storage, network, console-api). Dependencies point one way: service → lib. Structure: `go.mod`, `scripts/check-imports.sh`. | `scripts/check-imports.sh`, CI `imports` job |
+| L4. Code follows gofmt and goimports and passes the linters in `.golangci.yml`. The `std-error-handling` preset is not used. Structure: `.golangci.yml`. | CI `golangci-lint` v2.14.0, `lint` job |
+| L5. `go vet ./...` and `go test -race ./...` pass. Structure: `.github/workflows/ci.yml`. | CI `test` job |
+| L6. The three guard files (`repo-guard.yml`, `direct-push-watch.yml`, `scripts/guard-agents.sh`) are byte-identical to vws-deploy main. Do not edit them in this repository. | Judgment (compare with `sha256sum`) |
+| L7. The repo is English only (see "English only"). Hangul is allowed only in files `.github/english-allowlist` lists with a reason. Structure: `.github/english-allowlist`, `scripts/check-english.sh`. | `scripts/check-english.sh files`, CI `english` job |
+| L8. Layer rules: `errs` imports no module, telemetry or logging package; only `obs/report` imports sentry-go; only `obs` imports the OpenTelemetry SDK and exporters; no Kubernetes client package; no package imports std `log`; production code does not import `testing`. Structure: `internal/archtest`. | `TestArchitectureRules`, CI `test` job |
 
-The author and reviewer uphold the rules whose check cell is Judgment.
+The author and reviewer uphold the rules whose Enforcer cell is Judgment.
 
 ## English only
 
