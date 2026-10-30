@@ -82,8 +82,6 @@ func Setup(ctx context.Context, opts ...Option) (shutdown func(context.Context) 
 	}
 	tp := sdktrace.NewTracerProvider(tpOpts...)
 	stops = append(stops, tp.Shutdown)
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
 	// Metrics.
 	mpOpts := []sdkmetric.Option{sdkmetric.WithResource(res)}
@@ -114,12 +112,10 @@ func Setup(ctx context.Context, opts ...Option) (shutdown func(context.Context) 
 	}
 	mp := sdkmetric.NewMeterProvider(mpOpts...)
 	stops = append(stops, mp.Shutdown)
-	otel.SetMeterProvider(mp)
 	metrics, err := newMetrics(mp.Meter(instrumentationScopeName), cfg.Service, cfg.Version, buildCommit())
 	if err != nil {
 		return fail(err)
 	}
-	current.Store(metrics)
 
 	// Logs: stdout always, OTLP too when it is on.
 	var extra []slog.Handler
@@ -135,8 +131,6 @@ func Setup(ctx context.Context, opts ...Option) (shutdown func(context.Context) 
 		extra = append(extra, otelslog.NewHandler(cfg.Service, otelslog.WithLoggerProvider(lp)))
 	}
 	logger := newLogger(&cfg, extra...)
-	slog.SetDefault(logger)
-	otel.SetErrorHandler(&rateLimitedHandler{logger: logger, interval: cfg.ErrorLogEvery, now: time.Now})
 
 	// Error reports and Sentry.
 	sink := report.Sink{
@@ -155,7 +149,6 @@ func Setup(ctx context.Context, opts ...Option) (shutdown func(context.Context) 
 	if flush != nil {
 		stops = append(stops, func(context.Context) error { flush(report.FlushTimeout); return nil })
 	}
-	report.Configure(sink)
 
 	// Health server and SIGTERM.
 	h := health.Default()
@@ -171,6 +164,17 @@ func Setup(ctx context.Context, opts ...Option) (shutdown func(context.Context) 
 		return fail(fmt.Errorf("obs health: %w", err))
 	}
 	stops = append(stops, stopHealth)
+
+	// Install the process globals only after every step succeeded. A failed Setup must not leave
+	// a shut-down provider in otel, slog or obs.M for the next Setup or a still-running service.
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	otel.SetMeterProvider(mp)
+	current.Store(metrics)
+	slog.SetDefault(logger)
+	otel.SetErrorHandler(&rateLimitedHandler{logger: logger, interval: cfg.ErrorLogEvery, now: time.Now})
+	report.Configure(sink)
+
 	term := make(chan os.Signal, 1)
 	done := make(chan struct{})
 	signal.Notify(term, syscall.SIGTERM)
