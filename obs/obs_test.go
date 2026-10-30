@@ -130,6 +130,40 @@ func TestConfigPrecedenceAndValidation(t *testing.T) {
 	}
 }
 
+// A late failure (the health port is taken) must leave the process globals alone, not point
+// them at providers that fail() already shut down.
+func TestFailedSetupKeepsProcessGlobals(t *testing.T) {
+	tp, mp, logger, metrics := otel.GetTracerProvider(), otel.GetMeterProvider(), slog.Default(), obs.M()
+
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close() //nolint:errcheck // test listener
+
+	_, err = obs.Setup(t.Context(), obs.ForService("compute"), obs.WithOverride(func(c *obs.Config) {
+		c.Getenv = env(map[string]string{obs.EnvHealthAddr: ln.Addr().String()})
+		c.LogOutput = io.Discard
+		c.ShutdownTimeout = 100 * time.Millisecond
+	}))
+	if err == nil {
+		t.Fatal("Setup must fail when the health address is taken")
+	}
+
+	if got := otel.GetTracerProvider(); got != tp {
+		t.Error("failed Setup replaced the global tracer provider")
+	}
+	if got := otel.GetMeterProvider(); got != mp {
+		t.Error("failed Setup replaced the global meter provider")
+	}
+	if got := slog.Default(); got != logger {
+		t.Error("failed Setup replaced the default logger")
+	}
+	if got := obs.M(); got != metrics {
+		t.Error("failed Setup replaced obs.M")
+	}
+}
+
 func TestLogCarriesTraceRequestAndServiceFields(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	buf, _ := setup(t, map[string]string{"OTEL_TRACES_SAMPLER": "always_on"},
