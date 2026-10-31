@@ -27,7 +27,8 @@ type Config struct {
 	// Protocol is "grpc" or "http/protobuf".
 	Protocol string
 	Headers  map[string]string
-	// Disabled is OTEL_SDK_DISABLED=true. It has the same effect as an empty Endpoint.
+	// Disabled is OTEL_SDK_DISABLED=true. It creates no OpenTelemetry exporter and no Prometheus
+	// reader, so /metrics is not served even when prometheus is named.
 	Disabled bool
 
 	Sampler    string
