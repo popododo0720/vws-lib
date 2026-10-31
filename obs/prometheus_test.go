@@ -129,6 +129,22 @@ func TestPrometheusPullSurvivesRestartOnSameAddr(t *testing.T) {
 	}
 }
 
+// OTEL_SDK_DISABLED=true must not serve /metrics, even when prometheus is named.
+func TestPrometheusPullOffWhenSDKDisabled(t *testing.T) {
+	addr := freeAddr(t)
+	setup(t, map[string]string{
+		obs.EnvMetricsExporter: "prometheus",
+		obs.EnvHealthAddr:      addr,
+		obs.EnvSDKDisabled:     "true",
+	})
+	if code, _ := get(t, "http://"+addr+"/metrics"); code != http.StatusNotFound {
+		t.Errorf("/metrics status %d with OTEL_SDK_DISABLED=true, want 404", code)
+	}
+	if code, _ := get(t, "http://"+addr+"/healthz"); code != http.StatusOK {
+		t.Errorf("/healthz status %d with OTEL_SDK_DISABLED=true, want 200", code)
+	}
+}
+
 func TestPrometheusOffByDefaultAndValidated(t *testing.T) {
 	addr := freeAddr(t)
 	setup(t, map[string]string{obs.EnvHealthAddr: addr})

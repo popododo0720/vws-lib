@@ -4,9 +4,10 @@
 //
 // Setup reads only the standard OTEL_* and SENTRY_* variables and VWS_LOG_LEVEL, VWS_LOG_FORMAT,
 // VWS_HEALTH_ADDR (names.go). OTEL_METRICS_EXPORTER=prometheus serves the metrics as vws_* on
-// /metrics at VWS_HEALTH_ADDR instead of pushing them. With OTEL_EXPORTER_OTLP_ENDPOINT empty,
-// or OTEL_SDK_DISABLED=true, no OTLP exporter is created and the instrumentation calls do
-// nothing visible; the JSON log on stdout stays. Defaults are in defaults.go, names in names.go.
+// /metrics at VWS_HEALTH_ADDR instead of pushing them; OTEL_SDK_DISABLED=true serves no /metrics.
+// With OTEL_EXPORTER_OTLP_ENDPOINT empty, or OTEL_SDK_DISABLED=true, no OTLP exporter is created
+// and the instrumentation calls do nothing visible; the JSON log on stdout stays. Defaults are in
+// defaults.go, names in names.go.
 //
 // Design: https://github.com/popododo0720/vws-deploy/issues/42.
 package obs
@@ -94,7 +95,7 @@ func Setup(ctx context.Context, opts ...Option) (shutdown func(context.Context) 
 			sdkmetric.WithInterval(cfg.MetricInterval), sdkmetric.WithTimeout(cfg.ExportTimeout))))
 	}
 	var metricsHandler http.Handler
-	if cfg.MetricsExporter == "prometheus" {
+	if !cfg.Disabled && cfg.MetricsExporter == "prometheus" {
 		// A registry per Setup, not the client_golang global: a second Setup in the same process
 		// would otherwise fail with a duplicate registration.
 		reg := prometheus.NewRegistry()
