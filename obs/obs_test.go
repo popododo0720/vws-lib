@@ -17,12 +17,16 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/popododo0720/vws-lib/obs"
+	"github.com/popododo0720/vws-lib/obs/report"
 )
 
 func env(m map[string]string) func(string) string {
@@ -130,10 +134,83 @@ func TestConfigPrecedenceAndValidation(t *testing.T) {
 	}
 }
 
+// processGlobals records every process value Setup installs. The propagator and the report sink
+// have no getter that exposes the installed value, so this installs a marker for each and checks
+// that a failed Setup left the marker in place.
+type processGlobals struct {
+	tracerProvider trace.TracerProvider
+	meterProvider  metric.MeterProvider
+	propagator     propagation.TextMapPropagator
+	logger         *slog.Logger
+	metrics        *obs.Metrics
+	errorHandler   otel.ErrorHandler
+	sinkCalled     *bool
+}
+
+// markerPropagator is comparable. The SDK installs a composite propagator, which is a slice, and
+// comparing two interface values that hold slices panics.
+type markerPropagator struct{}
+
+func (markerPropagator) Inject(context.Context, propagation.TextMapCarrier) {}
+
+func (markerPropagator) Extract(ctx context.Context, _ propagation.TextMapCarrier) context.Context {
+	return ctx
+}
+
+func (markerPropagator) Fields() []string { return nil }
+
+func snapshotGlobals(t *testing.T) *processGlobals {
+	t.Helper()
+	g := &processGlobals{
+		tracerProvider: otel.GetTracerProvider(),
+		meterProvider:  otel.GetMeterProvider(),
+		logger:         slog.Default(),
+		metrics:        obs.M(),
+		errorHandler:   otel.GetErrorHandler(),
+	}
+	g.propagator = markerPropagator{}
+	otel.SetTextMapPropagator(g.propagator)
+	sinkCalled := false
+	g.sinkCalled = &sinkCalled
+	report.Configure(report.Sink{CountError: func(context.Context, string) { sinkCalled = true }})
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{}, propagation.Baggage{}))
+		report.Configure(report.Sink{})
+	})
+	return g
+}
+
+func (g *processGlobals) assertUnchanged(t *testing.T) {
+	t.Helper()
+	if got := otel.GetTracerProvider(); got != g.tracerProvider {
+		t.Error("failed Setup replaced the global tracer provider")
+	}
+	if got := otel.GetTextMapPropagator(); got != g.propagator {
+		t.Error("failed Setup replaced the global text map propagator")
+	}
+	if got := otel.GetMeterProvider(); got != g.meterProvider {
+		t.Error("failed Setup replaced the global meter provider")
+	}
+	if got := slog.Default(); got != g.logger {
+		t.Error("failed Setup replaced the default logger")
+	}
+	if got := obs.M(); got != g.metrics {
+		t.Error("failed Setup replaced obs.M")
+	}
+	if got := otel.GetErrorHandler(); got != g.errorHandler {
+		t.Error("failed Setup replaced the otel error handler")
+	}
+	_ = report.Error(t.Context(), io.ErrUnexpectedEOF) //nolint:errcheck // only the sink is the subject
+	if !*g.sinkCalled {
+		t.Error("failed Setup replaced the report sink")
+	}
+}
+
 // A late failure (the health port is taken) must leave the process globals alone, not point
 // them at providers that fail() already shut down.
 func TestFailedSetupKeepsProcessGlobals(t *testing.T) {
-	tp, mp, logger, metrics := otel.GetTracerProvider(), otel.GetMeterProvider(), slog.Default(), obs.M()
+	before := snapshotGlobals(t)
 
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -150,18 +227,23 @@ func TestFailedSetupKeepsProcessGlobals(t *testing.T) {
 		t.Fatal("Setup must fail when the health address is taken")
 	}
 
-	if got := otel.GetTracerProvider(); got != tp {
-		t.Error("failed Setup replaced the global tracer provider")
+	before.assertUnchanged(t)
+}
+
+// The Sentry step fails before the install block too, so it must leave the same globals alone.
+func TestFailedSentrySetupKeepsProcessGlobals(t *testing.T) {
+	before := snapshotGlobals(t)
+
+	_, err := obs.Setup(t.Context(), obs.ForService("compute"), obs.WithOverride(func(c *obs.Config) {
+		c.Getenv = env(map[string]string{obs.EnvSentryDSN: "not a dsn"})
+		c.LogOutput = io.Discard
+		c.ShutdownTimeout = 100 * time.Millisecond
+	}))
+	if err == nil || !strings.Contains(err.Error(), "obs sentry") {
+		t.Fatalf("Setup must fail at the Sentry step, got %v", err)
 	}
-	if got := otel.GetMeterProvider(); got != mp {
-		t.Error("failed Setup replaced the global meter provider")
-	}
-	if got := slog.Default(); got != logger {
-		t.Error("failed Setup replaced the default logger")
-	}
-	if got := obs.M(); got != metrics {
-		t.Error("failed Setup replaced obs.M")
-	}
+
+	before.assertUnchanged(t)
 }
 
 func TestLogCarriesTraceRequestAndServiceFields(t *testing.T) {
