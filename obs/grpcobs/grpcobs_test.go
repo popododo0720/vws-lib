@@ -178,6 +178,19 @@ func TestRequestIDTravelsAndMetricsCountCodes(t *testing.T) {
 	if status.Code(err) != codes.NotFound || !strings.Contains(err.Error(), "volume vol-1 not found") {
 		t.Errorf("a caller error keeps its message: %v", err)
 	}
+	// vws-lib#62: the reason reaches the client through the wire, and CodeOf keeps the code.
+	var info *errdetails.ErrorInfo
+	for _, d := range status.Convert(err).Details() {
+		if i, ok := d.(*errdetails.ErrorInfo); ok {
+			info = i
+		}
+	}
+	if info.GetReason() != "RESOURCE_NOT_FOUND" || info.GetDomain() != "vws.dev" {
+		t.Errorf("ErrorInfo lost on the wire: %v", status.Convert(err).Details())
+	}
+	if got := errs.CodeOf(err); got != errs.CodeNotFound {
+		t.Errorf("CodeOf on the wire error = %v, want NotFound", got)
+	}
 	if n := h.sum(t, obs.MetricRPCServerRequests, map[string]string{"grpc_code": "OK"}); n != 1 {
 		t.Errorf("OK count %d", n)
 	}
