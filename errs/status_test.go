@@ -32,6 +32,50 @@ func errorInfo(st *status.Status) *errdetails.ErrorInfo {
 	return nil
 }
 
+func errorInfos(st *status.Status) []*errdetails.ErrorInfo {
+	var out []*errdetails.ErrorInfo
+	for _, d := range st.Details() {
+		if info, ok := d.(*errdetails.ErrorInfo); ok {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+
+// vws-lib#62: every Code carries one ErrorInfo with domain vws.dev and the documented reason.
+func TestGRPCStatusAttachesErrorInfo(t *testing.T) {
+	want := map[errs.Code]string{
+		errs.CodeUnspecified:         "RECONCILIATION_FAILED",
+		errs.CodeInvalidArgument:     "INVALID_SPEC",
+		errs.CodeNotFound:            "RESOURCE_NOT_FOUND",
+		errs.CodeAlreadyExists:       "ALREADY_EXISTS",
+		errs.CodeConflict:            "DEPENDENCY_NOT_READY",
+		errs.CodeIdempotencyMismatch: "IDEMPOTENCY_CONFLICT",
+		errs.CodeUnauthenticated:     "INVALID_CREDENTIALS",
+		errs.CodePermissionDenied:    "ACCESS_DENIED",
+		errs.CodeResourceExhausted:   "QUOTA_EXCEEDED",
+		errs.CodePayloadTooLarge:     "INVALID_SPEC",
+		errs.CodeUnavailable:         "RECONCILIATION_FAILED",
+		errs.CodeUnimplemented:       "UNIMPLEMENTED",
+		errs.CodeInternal:            "RECONCILIATION_FAILED",
+	}
+	for _, c := range errs.Codes() {
+		infos := errorInfos(errs.GRPCStatus(errs.New(c, "boom")))
+		if len(infos) != 1 || infos[0].GetDomain() != "vws.dev" || infos[0].GetReason() != want[c] {
+			t.Errorf("%v: got %v, want one ErrorInfo vws.dev/%s", c, infos, want[c])
+		}
+	}
+}
+
+// A status that already carries details keeps them and gets no second ErrorInfo.
+func TestGRPCStatusDoesNotDuplicateErrorInfo(t *testing.T) {
+	st := errs.GRPCStatus(existsStatus(t).Err())
+	infos := errorInfos(st)
+	if len(infos) != 1 || infos[0].GetReason() != "ALREADY_EXISTS" || infos[0].GetDomain() != "network.vws" {
+		t.Errorf("got %v, want the peer's one ErrorInfo unchanged", infos)
+	}
+}
+
 // vws-lib#13: a status, bare or wrapped, keeps its code, its own message and its details.
 func TestStatusPassesThrough(t *testing.T) {
 	for name, err := range map[string]error{
@@ -58,7 +102,8 @@ func TestStatusPassesThrough(t *testing.T) {
 // A peer's status turned into an E by FromGRPC and returned again keeps its details.
 func TestFromGRPCRoundTripKeepsDetails(t *testing.T) {
 	st := errs.GRPCStatus(errs.FromGRPC(existsStatus(t).Err()))
-	if st.Code() != codes.AlreadyExists || errorInfo(st) == nil {
+	info := errorInfo(st)
+	if st.Code() != codes.AlreadyExists || info.GetReason() != "ALREADY_EXISTS" || info.GetDomain() != "network.vws" {
 		t.Errorf("round trip: %v %q %v", st.Code(), st.Message(), st.Details())
 	}
 }

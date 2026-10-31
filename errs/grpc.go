@@ -3,12 +3,17 @@ package errs
 import (
 	"errors"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// internalMessage is all a client learns about an unexpected error.
-const internalMessage = "internal error"
+const (
+	// errorDomain is the ErrorInfo.domain every VWS status carries.
+	errorDomain = "vws.dev"
+	// internalMessage is all a client learns about an unexpected error.
+	internalMessage = "internal error"
+)
 
 var grpcCodes = map[Code]codes.Code{
 	CodeUnspecified:         codes.Internal,
@@ -35,8 +40,51 @@ func GRPCCode(c Code) codes.Code {
 	return codes.Internal
 }
 
-// GRPCStatus converts any error to the status a server returns. An error that is not an E,
-// and an E with an Internal or Unspecified code, give "internal error": the cause stays in
+// errorReasons is the ErrorInfo.reason for a Code, matching vws-proto docs/errors.md. That
+// contract has no reason for CodeUnimplemented and forbids ERROR_REASON_UNSPECIFIED, so the
+// gRPC code name is used there.
+var errorReasons = map[Code]string{
+	CodeUnspecified:         "RECONCILIATION_FAILED",
+	CodeInvalidArgument:     "INVALID_SPEC",
+	CodeNotFound:            "RESOURCE_NOT_FOUND",
+	CodeAlreadyExists:       "ALREADY_EXISTS",
+	CodeConflict:            "DEPENDENCY_NOT_READY",
+	CodeIdempotencyMismatch: "IDEMPOTENCY_CONFLICT",
+	CodeUnauthenticated:     "INVALID_CREDENTIALS",
+	CodePermissionDenied:    "ACCESS_DENIED",
+	CodeResourceExhausted:   "QUOTA_EXCEEDED",
+	CodePayloadTooLarge:     "INVALID_SPEC",
+	CodeUnavailable:         "RECONCILIATION_FAILED",
+	CodeUnimplemented:       "UNIMPLEMENTED",
+	CodeInternal:            "RECONCILIATION_FAILED",
+}
+
+// reasonFor returns the ErrorInfo.reason for a Code. An unknown Code is Internal.
+func reasonFor(c Code) string {
+	if r, ok := errorReasons[c]; ok {
+		return r
+	}
+	return errorReasons[CodeInternal]
+}
+
+// withErrorInfo returns st with exactly one ErrorInfo. A status from a peer that already
+// carries one keeps its own details (vws-lib#13).
+func withErrorInfo(st *status.Status, c Code) *status.Status {
+	for _, d := range st.Details() {
+		if _, ok := d.(*errdetails.ErrorInfo); ok {
+			return st
+		}
+	}
+	out, err := st.WithDetails(&errdetails.ErrorInfo{Domain: errorDomain, Reason: reasonFor(c)})
+	if err != nil {
+		return st
+	}
+	return out
+}
+
+// GRPCStatus converts any error to the status a server returns. Every non-OK status carries one
+// google.rpc.ErrorInfo with domain vws.dev and the reason for its Code. An error that is not an
+// E, and an E with an Internal or Unspecified code, give "internal error": the cause stays in
 // the log. A nil error gives a nil status.
 func GRPCStatus(err error) *status.Status {
 	if err == nil {
@@ -47,18 +95,18 @@ func GRPCStatus(err error) *status.Status {
 		// A status in the chain passes through as it is: its own message (not the wrapped
 		// "rpc error: ... desc = rpc error: ..." text) and its details (vws-lib#13).
 		if st, ok := statusOf(err); ok && st.Code() != codes.Unknown && st.Code() != codes.Internal {
-			return st
+			return withErrorInfo(st, codeFromGRPC(st.Code()))
 		}
-		return status.New(codes.Internal, internalMessage)
+		return withErrorInfo(status.New(codes.Internal, internalMessage), CodeInternal)
 	}
 	if e.Code == CodeInternal || e.Code == CodeUnspecified || GRPCCode(e.Code) == codes.Internal {
-		return status.New(codes.Internal, internalMessage)
+		return withErrorInfo(status.New(codes.Internal, internalMessage), e.Code)
 	}
 	// An E made by FromGRPC from a peer's status keeps that status and its details.
 	if st, ok := statusOf(e.Unwrap()); ok && st.Code() == GRPCCode(e.Code) && st.Message() == e.Message {
-		return st
+		return withErrorInfo(st, e.Code)
 	}
-	return status.New(GRPCCode(e.Code), e.Message)
+	return withErrorInfo(status.New(GRPCCode(e.Code), e.Message), e.Code)
 }
 
 // statusOf returns the gRPC status of the first error in the chain that carries one
