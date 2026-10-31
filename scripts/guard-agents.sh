@@ -32,7 +32,7 @@
 #   guard-agents.sh selftest                run the guards on bad inputs; every one must fail
 #
 # Environment: GUARD_MAIN_BRANCH (default main), GUARD_HEADING (default "## Insider-risk guardrails"),
-# GUARD_ITEMS (default 7), GUARD_RULES_HEADING (default: the first of "## Rules" and "## 규칙표" in FILE),
+# GUARD_ITEMS (default 7), GUARD_RULES_HEADING (default: the first of "## Rules" and the legacy Korean heading in FILE),
 # GUARD_VERIFY_LABEL (default verify-approved), GUARD_QUALITY_ITEMS (default 9, the QUALITY.md checklist),
 # GUARD_VERIFY_ACTORS (comma list of logins allowed to approve; empty = any author), GUARD_VERIFY_LABELER
 # (login that last added the label), GUARD_VERIFY_EXCLUDE (PR author and head pusher: never approve),
@@ -72,15 +72,19 @@ cmd_agents() {
 
 # The rule table under HEADING has two columns, rule | enforcer. An enforcer cell is never empty;
 # a rule without a test, lint or CI step says so with a cell that starts with "Judgment".
-# HEADING: the argument, else GUARD_RULES_HEADING, else "## Rules" or "## 규칙표", whichever FILE has.
+# HEADING: the argument, else GUARD_RULES_HEADING, else "## Rules" or RULES_HEADING_LEGACY, whichever FILE has.
+# The legacy heading is the Korean "rules table" heading, written as UTF-8 octal escapes so this file stays
+# English only; it is still accepted until every repo's AGENTS.md is English.
+RULES_HEADING_LEGACY=$'## \352\267\234\354\271\231\355\221\234'
+RULES_HEADER_LEGACY=$'| \352\267\234\354\271\231 | \352\260\225\354\240\234 |'
 cmd_rules() {
   local file=${1:-AGENTS.md} heading=${2:-${GUARD_RULES_HEADING:-}} h rows
   [[ -f $file ]] || die "rules: ${file} does not exist"
   if [[ -z $heading ]]; then
-    for h in "## Rules" "## 규칙표"; do
+    for h in "## Rules" "$RULES_HEADING_LEGACY"; do
       if grep -q -x -F -- "$h" "$file"; then heading=$h; break; fi
     done
-    [[ -n $heading ]] || die "rules: ${file} has no '## Rules' or '## 규칙표' heading"
+    [[ -n $heading ]] || die "rules: ${file} has no '## Rules' or legacy Korean rules heading"
   fi
   grep -q -x -F -- "$heading" "$file" || die "rules: ${file} has no '${heading}' heading"
   rows=$(awk -v h="$heading" '
@@ -634,8 +638,8 @@ cmd_push_watch() {
 }
 
 CORRECT_HEADING="## /correct loop"
-# The Korean heading is still accepted until every repo's AGENTS.md is English.
-CORRECT_HEADING_LEGACY="## /correct 교정 루프"
+# The Korean heading ("correction loop", UTF-8 octal escapes) is still accepted until every repo's AGENTS.md is English.
+CORRECT_HEADING_LEGACY=$'## /correct \352\265\220\354\240\225\040\353\243\250\355\224\204'
 CORRECT_FIELDS="what-happened impact detection root-cause catching-check follow-ups"
 
 cmd_correct() {
@@ -723,7 +727,7 @@ cmd_selftest() {
   out=$(cd "$tmp" && PATH="$tmp/bin:$PATH" GOLOG=/dev/null GOFAIL=1 bash "$self" archtest "$rules") || die "selftest: archtest failed without an archtest directory"
   grep -q -x -F "rules: 2 rows, 1 Judgment" <<<"$out" || die "selftest: archtest without a directory dropped the Judgment count"
   echo "ok: archtest without a directory still prints the Judgment count"
-  sed 's/^## Rules$/## 규칙표/; s/| Rule | Enforcer |/| 규칙 | 강제 |/' "$rules" >"$tmp/rules-ko.md"
+  sed "s/^## Rules\$/${RULES_HEADING_LEGACY}/; s/| Rule | Enforcer |/${RULES_HEADER_LEGACY}/" "$rules" >"$tmp/rules-ko.md"
   expect_pass "the Korean heading is found" cmd_rules "$tmp/rules-ko.md"
   sed 's/^## Rules$/## Policy/' "$rules" >"$tmp/rules-arg.md"
   expect_pass "heading from the argument" cmd_rules "$tmp/rules-arg.md" "## Policy"
@@ -1030,7 +1034,7 @@ Part of #3, see https://github.com/acme/repo/issues/7" bash "$0" pr-body
   expect_fail "no /correct section" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n\n## next\n1. x\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
   expect_fail "/correct heading with an empty body" cmd_correct "$cb"
-  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n\n### 절차\n\n## next\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n\n### Steps\n\n## next\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
   expect_pass "/correct body with only a ### subheading" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n```sh\n# gh issue create --template incident.yml\n```\n## next\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
   expect_pass "/correct body with a fenced '#' line" cmd_correct "$cb"
