@@ -115,12 +115,26 @@ type wrappedStream struct {
 
 func (w *wrappedStream) Context() context.Context { return w.ctx }
 
+// requestIDField is implemented by every generated message with a request_id field.
+type requestIDField interface{ GetRequestId() string }
+
+// outgoingRequestID picks the x-request-id for a call. vws-proto docs/errors.md requires the
+// header to equal a set request_id field, so a non-empty field wins over the context id.
+func outgoingRequestID(ctx context.Context, req any) string {
+	if r, ok := req.(requestIDField); ok {
+		if id := r.GetRequestId(); id != "" {
+			return id
+		}
+	}
+	return obs.RequestID(ctx)
+}
+
 // UnaryClientInterceptor sends the request id and records vws.rpc.client.duration. The error is
 // returned as it came; callers convert it with errs.FromGRPC.
 func UnaryClientInterceptor(service, peer string) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		start := time.Now()
-		if id := obs.RequestID(ctx); id != "" {
+		if id := outgoingRequestID(ctx, req); id != "" {
 			ctx = metadata.AppendToOutgoingContext(ctx, RequestIDHeader, id)
 		}
 		err := invoker(ctx, method, req, reply, cc, opts...)
