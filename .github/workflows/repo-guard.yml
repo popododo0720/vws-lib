@@ -1,172 +1,36 @@
-# Common insider-risk workflow for pull requests. Copy this file, direct-push-watch.yml and
-# scripts/guard-agents.sh as-is into another repo.
-# The repo is private on a free plan, so branch protection is unavailable. These checks replace it.
-# The push check lives in its own file so that a pull request run has no skipped check.
+# Caller of the shared vws-deploy repo-guard jobs, pinned to one 40-hex SHA (vws-deploy docs/design/repo-guard-reusable.md).
 name: repo-guard
-
 on:
   pull_request:
-    # labeled/unlabeled re-run verify-gate when vws-verify approves or the label is removed (#249).
     types: [opened, edited, reopened, synchronize, labeled, unlabeled]
-  # A verdict comment that is added, edited or deleted re-runs verify-gate (verify-rerun below).
   issue_comment:
     types: [created, edited, deleted]
-
-permissions:
-  contents: read
-  pull-requests: read
-
+permissions: {}
 jobs:
-  pr-hygiene:
+  hygiene:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Base is the main branch
-        env:
-          GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
-          BASE_REF: ${{ github.base_ref }}
-        run: scripts/guard-agents.sh pr-base "$BASE_REF"
-      - name: Body says Part of #N and closes no issue
-        env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: scripts/guard-agents.sh pr-body
-      - name: No commit closes an issue
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: scripts/guard-agents.sh pr-commits "$BASE_SHA" "$HEAD_SHA"
-      - name: guard-agents.sh is the canonical vws-deploy copy
-        run: scripts/guard-agents.sh identity scripts/guard-agents.sh.sha256
-      - name: AGENTS.md has the guardrails
-        run: scripts/guard-agents.sh agents
-
-  # verify-gate (#249): red unless the PR has the verify-approved label and a comment with a
-  # "Verified-by: vws-verify" section that names the current head SHA with evidence for every docs/QUALITY.md
-  # item. The PR body never counts. A push changes the head, so an old approval no longer counts.
-  # When the repo variable VWS_VERIFY_ACTORS (comma list of logins) is set, the comment author and whoever last
-  # added the label must be in it. The PR author and the head commit's pusher (GUARD_VERIFY_EXCLUDE) never
-  # approve, unless the login is the vws-verify identity (repo variable VWS_VERIFY_IDENTITY).
-  # Limits (docs/QUALITY.md "Known gaps"): on pull_request GitHub runs this YAML from the PR's merge commit,
-  # so a PR CAN edit this job. Only the guard script is taken from the base commit, which stops a PR from
-  # quietly weakening the script but not from rewriting this YAML. All bots share one account, so the actor
-  # check cannot tell vws-verify from the PR author.
-  verify-gate:
+    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-pr-hygiene.yml@09615c7ebaaf4fcaed7191c0923af445f1439299
+    permissions: {contents: read, pull-requests: read, issues: read}
+  gate:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-      - name: Approved for this head
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          GUARD_VERIFY_ACTORS: ${{ vars.VWS_VERIFY_ACTORS }}
-          GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}
-        run: |
-          set -euo pipefail
-          # Labels as they are now, not the event snapshot (a re-run replays the original event).
-          LABELS=$(gh api "repos/${REPO}/issues/${NUMBER}/labels" --jq '[.[].name] | join(",")')
-          text=$(mktemp)
-          # One "@@comment-by: LOGIN" block per comment, from the API's author field. A body line that
-          # imitates the marker is defanged so a comment cannot claim another author. Control characters are
-          # normalized first (CRLF to LF, any other one to "?"), so "\r@@comment-by:" cannot slip past the defang.
-          gh api --paginate "repos/${REPO}/issues/${NUMBER}/comments" \
-            --jq '.[] | "@@comment-by: \(.user.login)\n\(.body | gsub("\r\n"; "\n")
-              | gsub("[\u0000-\u0008\u000b-\u001f\u007f]"; "?") | gsub("(?m)^@@comment-by:"; "@ @comment-by:"))"' >"$text"
-          # Who last added the label, from the issue events.
-          GUARD_VERIFY_LABELER=$(gh api --paginate "repos/${REPO}/issues/${NUMBER}/events" \
-            --jq '.[] | select(.event == "labeled" and .label.name == "verify-approved") | .actor.login' | tail -n 1)
-          # The head pusher: the actor of the activity that set the head ref to HEAD_SHA (repository activity
-          # API; push, force push, branch creation...), not the commit's committer field, which anyone can set.
-          # No match fails closed. The committer's linked login stays excluded as well.
-          pusher=$(gh api -X GET "repos/${HEAD_REPO}/activity" -f ref="refs/heads/${HEAD_REF}" -F per_page=100 \
-            --jq "[.[] | select(.after == \"${HEAD_SHA}\")][0].actor.login // \"\"")
-          if [[ -z $pusher ]]; then
-            echo "verify-gate: no push of ${HEAD_SHA} to ${HEAD_REPO} ${HEAD_REF} found; cannot tell who pushed the head" >&2
-            exit 1
-          fi
-          committer=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" --jq '.committer.login // ""')
-          GUARD_VERIFY_EXCLUDE="${PR_AUTHOR},${pusher},${committer}"
-          export GUARD_VERIFY_LABELER GUARD_VERIFY_EXCLUDE
-          scripts/guard-agents.sh verify-gate "$HEAD_SHA" "$LABELS" "$text"
-
-  # A new push drops the approval label as well; the head check above already fails without it.
-  # Only this job may write, and only labels (issues: write). It checks out nothing and runs no PR code.
-  verify-reset:
+    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-verify-gate.yml@09615c7ebaaf4fcaed7191c0923af445f1439299
+    permissions: {contents: read, pull-requests: read, issues: read}
+  reset:
     if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      pull-requests: write
-    steps:
-      - name: Remove verify-approved
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          NUMBER: ${{ github.event.pull_request.number }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-        run: |
-          set -euo pipefail
-          if [[ ",${LABELS}," == *",verify-approved,"* ]]; then
-            # Safe to re-run: a label that is already gone (HTTP 404) is the wanted state; other errors fail.
-            if out=$(gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" 2>&1); then
-              echo "verify-approved removed: a new head needs a new verification"
-            elif [[ $out == *"HTTP 404"* ]]; then
-              echo "verify-approved was already removed"
-            else
-              echo "$out" >&2
-              exit 1
-            fi
-          fi
-
-  # A comment event runs on the default branch, and its check would not attach to the PR head. So this job
-  # re-runs the verify-gate job of the newest pull_request run for the PR's current head; that job reads
-  # the comments again. It checks out nothing and runs no PR code; it may only re-run jobs (actions: write).
-  verify-rerun:
+    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-verify-reset.yml@09615c7ebaaf4fcaed7191c0923af445f1439299
+    permissions: {issues: write, pull-requests: write}
+  rerun:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request
+    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-verify-rerun.yml@09615c7ebaaf4fcaed7191c0923af445f1439299
+    permissions: {actions: write, issues: write, pull-requests: write}
+  # The required checks are bare names, and a called job reports as "caller / called", so shims carry them.
+  pr-hygiene:
+    needs: hygiene
+    if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      pull-requests: read
-    steps:
-      - name: Re-run verify-gate for the PR head
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          NUMBER: ${{ github.event.issue.number }}
-        run: |
-          set -euo pipefail
-          head=$(gh api "repos/${REPO}/pulls/${NUMBER}" --jq '.head.sha')
-          # Several PRs can share a head SHA: prefer the newest run linked to this PR number. Fork PRs list no
-          # pull_requests on the run, so the newest run for the head is the fallback.
-          run=$(gh api "repos/${REPO}/actions/workflows/repo-guard.yml/runs?event=pull_request&head_sha=${head}&per_page=100" \
-            --jq "([.workflow_runs[] | select(any(.pull_requests[]?; .number == ${NUMBER}))][0].id) // .workflow_runs[0].id // empty")
-          if [[ -z $run ]]; then echo "no pull_request run for ${head} yet"; exit 0; fi
-          job=$(gh api "repos/${REPO}/actions/runs/${run}/jobs" --jq '.jobs[] | select(.name == "verify-gate") | .id')
-          if [[ -z $job ]]; then echo "run ${run} has no verify-gate job"; exit 0; fi
-          status=
-          # A job that is still running cannot be re-run yet: wait for it (up to 15 minutes), then re-run.
-          # Giving up fails this job, so a changed verdict is never silently left unchecked.
-          for _ in $(seq 1 30); do
-            status=$(gh api "repos/${REPO}/actions/jobs/${job}" --jq '.status')
-            if [[ $status == completed ]] && gh api -X POST "repos/${REPO}/actions/jobs/${job}/rerun" >/dev/null; then
-              echo "verify-gate job ${job} re-run"; exit 0
-            fi
-            sleep 30
-          done
-          echo "verify-gate job ${job} could not be re-run (status ${status})" >&2
-          exit 1
+    steps: [{env: {R: "${{ needs.hygiene.result }}/${{ needs.hygiene.outputs.passed }}"}, run: test "$R" = success/pr-hygiene}]
+  verify-gate:
+    needs: gate
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps: [{env: {R: "${{ needs.gate.result }}/${{ needs.gate.outputs.passed }}"}, run: test "$R" = success/verify-gate}]
