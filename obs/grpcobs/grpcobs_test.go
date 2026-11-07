@@ -68,6 +68,17 @@ func (s *svc) Check(ctx context.Context, r *grpc_health_v1.HealthCheckRequest) (
 	return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}, nil
 }
 
+// Watch sends one message, or fails before sending when the Service field is "notfound".
+func (s *svc) Watch(
+	r *grpc_health_v1.HealthCheckRequest, ws grpc.ServerStreamingServer[grpc_health_v1.HealthCheckResponse],
+) error {
+	if r.GetService() == "notfound" {
+		return errs.New(errs.CodeNotFound, "service not found")
+	}
+	resp := &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}
+	return ws.Send(resp) //nolint:wrapcheck // test server
+}
+
 type harness struct {
 	client grpc_health_v1.HealthClient
 	svc    *svc
