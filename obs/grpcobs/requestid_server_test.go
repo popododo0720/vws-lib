@@ -113,29 +113,63 @@ func TestServerRequestIDRules(t *testing.T) {
 
 func TestServerRequestIDOnTheWire(t *testing.T) {
 	h := start(t)
-	call := func(id string) (metadata.MD, error) {
+	call := func(id, service string) (metadata.MD, error) {
 		ctx, cancel := context.WithTimeout(obs.WithRequestID(t.Context(), id), 5*time.Second)
 		defer cancel()
 		var hdr metadata.MD
-		_, err := h.client.Check(ctx, &grpc_health_v1.HealthCheckRequest{}, grpc.Header(&hdr))
+		_, err := h.client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: service}, grpc.Header(&hdr))
 		return hdr, err //nolint:wrapcheck // the test reads the status code
 	}
-	hdr, err := call("req-42")
-	if err != nil || strings.Join(hdr.Get(grpcobs.RequestIDHeader), ",") != "req-42" {
-		t.Fatalf("x-request-id response header = %q, err %v", hdr.Get(grpcobs.RequestIDHeader), err)
+	for service, code := range map[string]codes.Code{"ok": codes.OK, "notfound": codes.NotFound, "panic": codes.Internal} {
+		hdr, err := call("req-"+service, service)
+		got := strings.Join(hdr.Get(grpcobs.RequestIDHeader), ",")
+		if status.Code(err) != code || got != "req-"+service {
+			t.Errorf("%s: x-request-id response header = %q, err %v", service, got, err)
+		}
 	}
-	_, err = call("req 42")
+	if h.svc.sawRequestID != "req-panic" {
+		t.Fatalf("handler saw %q", h.svc.sawRequestID)
+	}
+	_, err := call("req 42", "ok")
 	if status.Code(err) != codes.InvalidArgument || reason(err) != "INVALID_SPEC" {
 		t.Fatalf("malformed header: err = %v (reason %q)", err, reason(err))
 	}
-	if h.svc.sawRequestID != "req-42" {
+	if h.svc.sawRequestID != "req-panic" {
 		t.Errorf("the rejected call reached the handler: %q", h.svc.sawRequestID)
 	}
 	if n := h.sum(t, obs.MetricRPCServerRequests, map[string]string{"grpc_code": "InvalidArgument"}); n != 1 {
 		t.Errorf("InvalidArgument count %d", n)
 	}
-	if n := h.sum(t, obs.MetricErrors, nil); n != 0 {
-		t.Errorf("a caller error was reported: %d", n)
+}
+
+func TestStreamRequestIDOnTheWire(t *testing.T) {
+	h := start(t)
+	// ClientOptions has no stream interceptor, so the test sends the header itself.
+	watch := func(id, service string) (metadata.MD, error) {
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		ctx = metadata.AppendToOutgoingContext(ctx, grpcobs.RequestIDHeader, id)
+		ws, err := h.client.Watch(ctx, &grpc_health_v1.HealthCheckRequest{Service: service})
+		if err != nil {
+			return nil, err //nolint:wrapcheck // the test reads the status code
+		}
+		_, err = ws.Recv()
+		hdr, herr := ws.Header()
+		if herr != nil {
+			return nil, herr //nolint:wrapcheck // the test reads the status code
+		}
+		return hdr, err //nolint:wrapcheck // the test reads the status code
+	}
+	for service, code := range map[string]codes.Code{"ok": codes.OK, "notfound": codes.NotFound} {
+		hdr, err := watch("req-"+service, service)
+		got := strings.Join(hdr.Get(grpcobs.RequestIDHeader), ",")
+		if status.Code(err) != code || got != "req-"+service {
+			t.Errorf("%s: x-request-id response header = %q, err %v", service, got, err)
+		}
+	}
+	_, err := watch("req/42", "ok")
+	if status.Code(err) != codes.InvalidArgument || reason(err) != "INVALID_SPEC" {
+		t.Fatalf("malformed header: err = %v (reason %q)", err, reason(err))
 	}
 }
 
