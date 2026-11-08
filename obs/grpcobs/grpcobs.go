@@ -45,13 +45,70 @@ func ClientOptions(service, peer string) []grpc.DialOption {
 	}
 }
 
-func requestContext(ctx context.Context) context.Context {
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if v := md.Get(RequestIDHeader); len(v) > 0 && v[0] != "" {
-			return obs.WithRequestID(ctx, v[0])
+// incomingRequestID returns the first x-request-id value, or "" when absent or empty.
+func incomingRequestID(ctx context.Context) string {
+	md, _ := metadata.FromIncomingContext(ctx)
+	if v := md.Get(RequestIDHeader); len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}
+
+// validRequestID reports whether id is 1-64 characters of [A-Za-z0-9._-] (vws-proto docs/errors.md).
+func validRequestID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
+		default:
+			return false
 		}
 	}
-	return obs.WithRequestID(ctx, obs.NewRequestID())
+	return true
+}
+
+func invalidRequestID(field, message string) error {
+	return errs.New(errs.CodeInvalidArgument, message, errs.WithField(field))
+}
+
+// resolveRequestID picks the id a server uses for a call per vws-proto docs/errors.md: a set
+// request_id field wins and a present header must equal it; otherwise the header, otherwise a
+// new id. A malformed or mismatched id is INVALID_ARGUMENT / INVALID_SPEC.
+func resolveRequestID(header, field string) (string, error) {
+	if header != "" && !validRequestID(header) {
+		return "", invalidRequestID(RequestIDHeader, "x-request-id must be 1-64 characters of [A-Za-z0-9._-]")
+	}
+	if field != "" {
+		if !validRequestID(field) {
+			return "", invalidRequestID("request_id", "request_id must be 1-64 characters of [A-Za-z0-9._-]")
+		}
+		if header != "" && header != field {
+			return "", invalidRequestID(RequestIDHeader, "x-request-id does not match request_id")
+		}
+		return field, nil
+	}
+	if header != "" {
+		return header, nil
+	}
+	return obs.NewRequestID(), nil
+}
+
+// requestContext resolves the request id, puts it in ctx and returns it in the x-request-id
+// response header through setHeader. A rejected id is not logged or echoed: ctx gets a new one.
+func requestContext(
+	ctx context.Context, field string, setHeader func(context.Context, metadata.MD) error,
+) (context.Context, error) {
+	id, err := resolveRequestID(incomingRequestID(ctx), field)
+	if err != nil {
+		return obs.WithRequestID(ctx, obs.NewRequestID()), err
+	}
+	ctx = obs.WithRequestID(ctx, id)
+	if herr := setHeader(ctx, metadata.Pairs(RequestIDHeader, id)); herr != nil {
+		slog.WarnContext(ctx, "set x-request-id response header", slog.String("error", herr.Error()))
+	}
+	return ctx, nil
 }
 
 // serverFault reports whether an error is the server's fault: only those go to Sentry.
@@ -82,7 +139,14 @@ func finish(ctx context.Context, service, method string, start time.Time, err er
 func UnaryServerInterceptor(service string) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		start := time.Now()
-		ctx = requestContext(ctx)
+		field := ""
+		if r, ok := req.(requestIDField); ok {
+			field = r.GetRequestId()
+		}
+		ctx, err = requestContext(ctx, field, grpc.SetHeader)
+		if err != nil {
+			return nil, finish(ctx, service, info.FullMethod, start, err)
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				resp, err = nil, finish(ctx, service, info.FullMethod, start, report.Panic(ctx, r))
@@ -97,7 +161,11 @@ func UnaryServerInterceptor(service string) grpc.UnaryServerInterceptor {
 func StreamServerInterceptor(service string) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
 		start := time.Now()
-		ctx := requestContext(ss.Context())
+		ctx, err := requestContext(ss.Context(), "",
+			func(_ context.Context, md metadata.MD) error { return ss.SetHeader(md) })
+		if err != nil {
+			return finish(ctx, service, info.FullMethod, start, err)
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				err = finish(ctx, service, info.FullMethod, start, report.Panic(ctx, r))
