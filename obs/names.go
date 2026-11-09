@@ -83,8 +83,11 @@ const (
 	LabelAction      = "action"
 	LabelAWSCode     = "aws_code"
 	LabelStore       = "store"
-	LabelVersion     = "version"
-	LabelCommit      = "commit"
+	// LabelKind is a resource kind from a small fixed set the service defines (instance, image,
+	// key_pair), never a resource id or a name the caller chose.
+	LabelKind    = "kind"
+	LabelVersion = "version"
+	LabelCommit  = "commit"
 )
 
 // allowedLabels is the allowlist Attrs checks.
@@ -92,5 +95,5 @@ var allowedLabels = map[string]bool{
 	LabelService: true, LabelRPCMethod: true, LabelGRPCCode: true, LabelCode: true,
 	LabelController: true, LabelResult: true, LabelQueue: true, LabelOutcome: true,
 	LabelPeer: true, LabelRoute: true, LabelStatusClass: true, LabelAction: true,
-	LabelAWSCode: true, LabelStore: true, LabelVersion: true, LabelCommit: true,
+	LabelAWSCode: true, LabelStore: true, LabelKind: true, LabelVersion: true, LabelCommit: true,
 }

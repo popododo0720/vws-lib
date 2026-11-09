@@ -326,6 +326,7 @@ func TestMetricsNamesAndLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	custom.Add(ctx, 2, obs.LabelOutcome, "ok")
+	custom.Add(ctx, 1, obs.LabelKind, "instance")
 	hist, err := m.NewHistogram("vws.custom.latency", "latency", "s")
 	if err != nil {
 		t.Fatal(err)
@@ -387,6 +388,9 @@ func TestMetricsNamesAndLabels(t *testing.T) {
 				}
 			}
 		}
+	}
+	if !slices.Contains(got["vws.custom.things"], obs.LabelKind) {
+		t.Errorf("vws.custom.things labels = %v, want %s", got["vws.custom.things"], obs.LabelKind)
 	}
 }
 
