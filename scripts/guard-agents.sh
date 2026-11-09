@@ -15,7 +15,7 @@
 #   guard-agents.sh pr-normalize [FILE]     prints the pull request text (FILE or $PR_BODY) with each line "Part of
 #                                           <GUARD_PART_OF_OWNER>/vws-<repo>#N" rewritten to "Part of vws-<repo>#N"
 #   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N, owner/repo#N or an issue URL) and no Hangul
-#   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD has a "<type>: summary" subject and "Part of #N", and passes commit-msg
+#   guard-agents.sh pr-commits BASE HEAD    BASE..HEAD has no merge commit, and every commit has a "<type>: summary" subject and "Part of #N", and passes commit-msg
 #   guard-agents.sh pr-size BASE HEAD       BASE...HEAD changes at most the .github/pr-size.conf limit (800) of
 #                                           lines outside generated, vendored, lockfile and testdata paths,
 #                                           unless $PR_BODY has a "Size-exception: <reason>" line (see cmd_pr_size)
@@ -37,7 +37,8 @@
 # GUARD_VERIFY_ACTORS (comma list of logins allowed to approve; empty = any author), GUARD_VERIFY_LABELER
 # (login that last added the label), GUARD_VERIFY_EXCLUDE (PR author and head pusher: never approve),
 # GUARD_VERIFY_IDENTITY (the vws-verify login, exempt from EXCLUDE), GUARD_PART_OF_OWNER (default popododo0720,
-# the owner pr-normalize strips), GUARD_ARCHTEST_PKG (default ./internal/archtest/...), GITHUB_REPOSITORY and an authenticated gh for push-watch.
+# the owner pr-normalize strips), GUARD_ARCHTEST_PKG (default ./internal/archtest/...), GITHUB_REPOSITORY and an authenticated gh for push-watch,
+# GUARD_ALLOW_SHAS (push-watch: full SHAs, space or comma separated, of known commits without a pull request).
 set -euo pipefail
 export LC_ALL=C
 
@@ -70,15 +71,16 @@ cmd_agents() {
   fi
 }
 
-# The rule table under HEADING has two columns, rule | enforcer. An enforcer cell is never empty;
-# a rule without a test, lint or CI step says so with a cell that starts with "Judgment".
+# The rule table under HEADING has two or more columns, and the last one is the enforcer. Every row has
+# the header's column count. An enforcer cell is never empty; a rule without a test, lint or CI step
+# says so with a cell that starts with "Judgment".
 # HEADING: the argument, else GUARD_RULES_HEADING, else "## Rules" or RULES_HEADING_LEGACY, whichever FILE has.
 # The legacy heading is the Korean "rules table" heading, written as UTF-8 octal escapes so this file stays
 # English only; it is still accepted until every repo's AGENTS.md is English.
 RULES_HEADING_LEGACY=$'## \352\267\234\354\271\231\355\221\234'
 RULES_HEADER_LEGACY=$'| \352\267\234\354\271\231 | \352\260\225\354\240\234 |'
 cmd_rules() {
-  local file=${1:-AGENTS.md} heading=${2:-${GUARD_RULES_HEADING:-}} h rows
+  local file=${1:-AGENTS.md} heading=${2:-${GUARD_RULES_HEADING:-}} h rows cols
   [[ -f $file ]] || die "rules: ${file} does not exist"
   if [[ -z $heading ]]; then
     for h in "## Rules" "$RULES_HEADING_LEGACY"; do
@@ -92,13 +94,14 @@ cmd_rules() {
     on && /^## / { exit }
     on && /^\|/ { print }' "$file")
   [[ -n $rows ]] || die "rules: '${heading}' has no table"
-  awk -F'|' 'NR == 1 && NF != 4 { exit 1 } NR == 2 && $2 !~ /^[[:space:]]*:?-+:?[[:space:]]*$/ { exit 1 }' <<<"$rows" ||
-    die "rules: '${heading}' needs a two-column '| Rule | Enforcer |' table"
+  awk -F'|' 'NR == 1 && NF < 4 { exit 1 } NR == 2 && $2 !~ /^[[:space:]]*:?-+:?[[:space:]]*$/ { exit 1 }' <<<"$rows" ||
+    die "rules: '${heading}' needs a '| Rule | ... | Enforcer |' table with the enforcer last"
+  cols=$(awk -F'|' 'NR == 1 { print NF; exit }' <<<"$rows")
   rows=$(tail -n +3 <<<"$rows")
   [[ -n $rows ]] || die "rules: '${heading}' has no rule rows"
-  awk -F'|' 'NF != 4 || $3 ~ /^[[:space:]]*$/ { print "rules: row without an enforcer: " $0; bad = 1 } END { exit bad }' <<<"$rows" >&2 ||
+  awk -F'|' -v n="$cols" 'NF != n || $(NF - 1) ~ /^[[:space:]]*$/ { print "rules: row without an enforcer: " $0; bad = 1 } END { exit bad }' <<<"$rows" >&2 ||
     die "rules: every row needs an enforcer (test, lint, CI step) or 'Judgment'"
-  echo "rules: $(wc -l <<<"$rows") rows, $(awk -F'|' '$3 ~ /^[[:space:]]*Judgment/' <<<"$rows" | wc -l) Judgment"
+  echo "rules: $(wc -l <<<"$rows") rows, $(awk -F'|' '$(NF - 1) ~ /^[[:space:]]*Judgment/' <<<"$rows" | wc -l) Judgment"
 }
 
 # verify-gate: the approval is bound to one head commit. A push changes the head, so the old section no
@@ -493,13 +496,16 @@ cmd_pr_commits() {
   [[ -n $base && -n $head ]] || die "pr-commits: needs BASE and HEAD"
   tmp=$(mktemp)
   trap 'rm -f "$tmp"' RETURN
-  # Merge commits too: a merge message that closes an issue closes it like any other commit. A range git
-  # cannot list (a bad ref) fails instead of checking nothing.
-  local -a shas
+  # A range git cannot list (a bad ref) fails instead of checking nothing.
+  local -a shas merges
   mapfile -t shas < <(git rev-list "${base}..${head}" || echo "rev-list-failed")
   [[ ${shas[*]:-} != *rev-list-failed* ]] || die "pr-commits: cannot list the commits in ${base}..${head}"
   # An empty range checks nothing, so it fails too: a pull request always has at least one commit.
   [[ -n ${shas[*]:-} ]] || die "pr-commits: there are no commits in ${base}..${head}; nothing was checked"
+  # A pull request is linear: a merge commit (such as main merged into the branch) fails (vws-deploy#326).
+  mapfile -t merges < <(git rev-list --merges "${base}..${head}")
+  [[ -z ${merges[*]:-} ]] ||
+    die "pr-commits: merge commit(s) in ${base}..${head}: ${merges[*]}; rebase the branch on the base instead of merging"
   for sha in "${shas[@]}"; do
     [[ -n $sha ]] || continue
     subject=$(git log -1 --format=%s "$sha")
@@ -620,18 +626,31 @@ pr_count() {
 }
 
 cmd_push_watch() {
-  local before=${1:-} after=${2:-} zero sha
-  local -a commits bad=()
+  local before=${1:-} after=${2:-} zero sha allow=" " allow_raw
+  local -a commits bad=() allowed=()
   [[ -n $before && -n $after ]] || die "push-watch: needs BEFORE and AFTER"
+  [[ $before =~ ^[0-9a-f]{40}$ ]] || die "push-watch: BEFORE '${before}' is not a full 40-character SHA"
+  # GUARD_ALLOW_SHAS: full SHAs of known commits without a pull request (such as the initial commit).
+  allow_raw=${GUARD_ALLOW_SHAS:-}
+  read -r -a allowed <<<"${allow_raw//,/ }"
+  for sha in "${allowed[@]}"; do
+    [[ $sha =~ ^[0-9a-f]{40}$ ]] || die "push-watch: GUARD_ALLOW_SHAS entry '${sha}' is not a full 40-character SHA"
+    allow+="${sha} "
+  done
   zero=$(printf '0%.0s' {1..40})
-  if [[ $before == "$zero" ]] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+  if [[ $before == "$zero" ]]; then
     commits=("$after")
   else
+    # A force-push can leave the old head out of the clone; fetch it by SHA before judging.
+    git cat-file -e "${before}^{commit}" 2>/dev/null || timeout 60 git fetch -q --no-tags origin "$before" 2>/dev/null || true
+    git cat-file -e "${before}^{commit}" 2>/dev/null ||
+      die "push-watch: the previous head ${before} of '${MAIN}' is gone (history rewrite suspected)"
     git merge-base --is-ancestor "$before" "$after" ||
       die "push-watch: history of '${MAIN}' was rewritten (${before} is not an ancestor of ${after})"
     mapfile -t commits < <(git rev-list --first-parent "${before}..${after}")
   fi
   for sha in "${commits[@]}"; do
+    [[ $allow == *" ${sha} "* ]] && { echo "push-watch: ${sha} is in GUARD_ALLOW_SHAS"; continue; }
     [[ $(pr_count "$sha") -gt 0 ]] || bad+=("$sha")
   done
   [[ ${#bad[@]} -eq 0 ]] || die "push-watch: commits on '${MAIN}' without a pull request: ${bad[*]}"
@@ -739,6 +758,11 @@ cmd_selftest() {
   expect_fail "a row with three columns" cmd_rules "$tmp/threecol.md"
   sed 's/| Rule | Enforcer |/| Rule | Enforcer | Note |/' "$rules" >"$tmp/header.md"
   expect_fail "a three-column header" cmd_rules "$tmp/header.md"
+  printf '# t\n## Rules\n\n| ID | Rule | Check | Enforcer |\n| --- | --- | --- | --- |\n| R1 | a | - | `TestA` |\n| R2 | b | `x` | Judgment. why |\n| R3 | c | Judgment | `TestC` |\n' >"$tmp/wide.md"
+  [[ $(cmd_rules "$tmp/wide.md") == "rules: 3 rows, 1 Judgment" ]] || die "selftest: a four-column table is not read by its last column"
+  echo "ok: a four-column table is read by its last column"
+  sed 's/^| R1 | a | - | `TestA` |$/| R1 | a | `TestA` |  |/' "$tmp/wide.md" >"$tmp/wide-empty.md"
+  expect_fail "a four-column row with an empty last column" cmd_rules "$tmp/wide-empty.md"
   sed 's/^## Rules$/## other/' "$rules" >"$tmp/norules.md"
   expect_fail "no rule table heading" cmd_rules "$tmp/norules.md"
   printf '# t\n## Rules\n\n| Rule | Enforcer |\n| --- | --- |\n' >"$tmp/emptyrules.md"
@@ -1094,6 +1118,25 @@ GH
   git -C "$repo" commit -q -m rewrite
   expect_fail "rewritten history" push "$c3" "$(git -C "$repo" rev-parse HEAD)"
   expect_fail "new branch whose head has no pull request" push "$(printf '0%.0s' {1..40})" "$c1"
+  # Issue 37: a previous head missing from the clone is fetched by SHA, and fails when it is gone.
+  expect_fail "previous head gone from the clone and from origin" push "$(printf 'd%.0s' {1..40})" "$c3"
+  expect_fail "a BEFORE that is not a full SHA" push --upload-pack=x "$c3"
+  local origin="$tmp/origin" gone
+  git -C "$repo" init -q --bare "$origin"
+  git -C "$repo" remote add origin "$origin"
+  git init -q -b "$MAIN" "$tmp/other"
+  git -C "$tmp/other" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m gone
+  gone=$(git -C "$tmp/other" rev-parse HEAD)
+  git -C "$tmp/other" push -q "$origin" HEAD:refs/heads/gone
+  git -C "$repo" cat-file -e "${gone}^{commit}" 2>/dev/null && die "selftest: ${gone} must not be in the clone yet"
+  expect_fail "force-pushed previous head fetched from origin" push "$gone" "$c3"
+  git -C "$repo" cat-file -e "${gone}^{commit}" || die "selftest: push-watch did not fetch ${gone} from origin"
+  git -C "$repo" remote remove origin
+  # Issue 37: a known commit without a pull request passes only when GUARD_ALLOW_SHAS names its full SHA.
+  printf '%s\n' "$c2" >"$tmp/pulls"
+  expect_fail "a commit without a pull request, not allowed" push "$c1" "$c3"
+  GUARD_ALLOW_SHAS="$c3 $c1" expect_pass "a commit without a pull request in GUARD_ALLOW_SHAS" push "$c1" "$c3"
+  GUARD_ALLOW_SHAS=${c3:0:12} expect_fail "a short SHA in GUARD_ALLOW_SHAS" push "$c1" "$c3"
   git -C "$repo" checkout -q -b commits "$c3"
   echo y >"$repo/h"
   git -C "$repo" add h
@@ -1105,7 +1148,7 @@ GH
   c4=$(git -C "$repo" rev-parse HEAD)
   git -C "$repo" commit -q --allow-empty -m "ci: u" -m "Resolved https://github.com/acme/repo/issues/4" -m "Part of #4"
   expect_fail "a commit that closes an issue by URL" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c4"
-  # Stored messages keep their # lines; merge commits are checked; a bad range fails (vws-deploy guard P2).
+  # Stored messages keep their # lines; a merge commit fails; a bad range fails (vws-deploy guard P2).
   local c5
   git -C "$repo" reset -q --hard "$c4"
   c5=$(git -C "$repo" rev-parse HEAD~1)
@@ -1116,8 +1159,17 @@ GH
   git -C "$repo" checkout -q -b side "$c5"
   git -C "$repo" commit -q --allow-empty -m "ci: side" -m "Part of #4"
   git -C "$repo" checkout -q commits
-  git -C "$repo" merge -q --no-ff -m "ci: merge side" -m "Part of #4" -m "Closes #4" side
-  expect_fail "a merge commit that closes an issue" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" merge -q --no-ff -m "ci: merge side" -m "Part of #4" side
+  # vws-deploy#326: a merge commit with a valid message still fails, and the error names it.
+  local merge_out
+  merge_out=$(bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5" 2>&1) &&
+    die "selftest: a merge commit in the range was accepted"
+  [[ $merge_out == *"merge commit(s) in ${c5}..HEAD: $(git -C "$repo" rev-parse HEAD); rebase"* ]] ||
+    die "selftest: a merge commit in the range did not fail with its SHA (${merge_out})"
+  echo "ok: a merge commit in the range fails and is named"
+  git -C "$repo" reset -q --hard side
+  expect_pass "a linear range" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" checkout -q commits
   git -C "$repo" reset -q --hard "$c5"
   expect_fail "pr-commits on a range git cannot list" bash -c 'cd "$1" && bash "$2" pr-commits no-such-ref HEAD' _ "$repo" "$OLDPWD_SCRIPT"
   expect_fail "pr-commits on an empty range" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
