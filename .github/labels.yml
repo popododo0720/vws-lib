@@ -6,12 +6,6 @@
 - name: ready
   color: "0e8a16"
   description: "A human approved this issue or PR for an agent to take"
-- name: deepseek
-  color: "1d76db"
-  description: "The factory orchestrator hands this task to DeepSeek (vws-deploy#333)"
-- name: grok
-  color: "5319e7"
-  description: "The task goes to grok after two DeepSeek failures (vws-deploy#333)"
 - name: in-review
   color: "fbca04"
   description: "An agent's PR for this task is waiting for vws-verify"
