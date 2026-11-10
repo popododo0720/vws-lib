@@ -120,7 +120,12 @@ func TestServerRequestIDOnTheWire(t *testing.T) {
 		_, err := h.client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: service}, grpc.Header(&hdr))
 		return hdr, err //nolint:wrapcheck // the test reads the status code
 	}
-	for service, code := range map[string]codes.Code{"ok": codes.OK, "notfound": codes.NotFound, "panic": codes.Internal} {
+	// A slice, not a map: the handler assertion below needs "panic" last.
+	for _, tc := range []struct {
+		service string
+		code    codes.Code
+	}{{"ok", codes.OK}, {"notfound", codes.NotFound}, {"panic", codes.Internal}} {
+		service, code := tc.service, tc.code
 		hdr, err := call("req-"+service, service)
 		got := strings.Join(hdr.Get(grpcobs.RequestIDHeader), ",")
 		if status.Code(err) != code || got != "req-"+service {
@@ -160,7 +165,11 @@ func TestStreamRequestIDOnTheWire(t *testing.T) {
 		}
 		return hdr, err //nolint:wrapcheck // the test reads the status code
 	}
-	for service, code := range map[string]codes.Code{"ok": codes.OK, "notfound": codes.NotFound} {
+	for _, tc := range []struct {
+		service string
+		code    codes.Code
+	}{{"ok", codes.OK}, {"notfound", codes.NotFound}} {
+		service, code := tc.service, tc.code
 		hdr, err := watch("req-"+service, service)
 		got := strings.Join(hdr.Get(grpcobs.RequestIDHeader), ",")
 		if status.Code(err) != code || got != "req-"+service {
