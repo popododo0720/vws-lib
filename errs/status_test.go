@@ -16,7 +16,11 @@ import (
 func existsStatus(t *testing.T) *status.Status {
 	t.Helper()
 	st, err := status.New(codes.AlreadyExists, "subnet sub-1 already exists").
-		WithDetails(&errdetails.ErrorInfo{Reason: "ALREADY_EXISTS", Domain: "network.vws", Metadata: map[string]string{"id": "sub-1"}})
+		WithDetails(&errdetails.ErrorInfo{
+			Reason:   "ALREADY_EXISTS",
+			Domain:   "network.vws",
+			Metadata: map[string]string{"id": "sub-1"},
+		})
 	if err != nil {
 		t.Fatal(err)
 	}

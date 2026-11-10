@@ -133,7 +133,9 @@ func TestErrorChain(t *testing.T) {
 	if errs.CodeOf(errors.New("x")) != errs.CodeUnspecified || errs.KindOf(nil) != errs.KindUnspecified {
 		t.Errorf("a non-E must be Unspecified")
 	}
-	if errs.KindVolume.String() != "volume" || errs.KindSecurityGroup.String() != "securityGroup" || errs.Kind(99).String() != "" {
+	if errs.KindVolume.String() != "volume" ||
+		errs.KindSecurityGroup.String() != "securityGroup" ||
+		errs.Kind(99).String() != "" {
 		t.Errorf("kind names")
 	}
 }

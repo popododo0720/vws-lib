@@ -34,7 +34,9 @@ type svc struct {
 	sawRequestID string
 }
 
-func (s *svc) Check(ctx context.Context, r *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
+func (s *svc) Check(
+	ctx context.Context, r *grpc_health_v1.HealthCheckRequest,
+) (*grpc_health_v1.HealthCheckResponse, error) {
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		if v := md.Get(grpcobs.RequestIDHeader); len(v) > 0 {
 			s.sawRequestID = v[0]

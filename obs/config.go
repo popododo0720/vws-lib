@@ -246,7 +246,8 @@ func (c *Config) validate() error {
 		return fmt.Errorf("%s=%q: this version supports otlp, prometheus and none", EnvMetricsExporter, c.MetricsExporter)
 	}
 	switch c.Sampler {
-	case "always_on", "always_off", "traceidratio", "parentbased_always_on", "parentbased_always_off", "parentbased_traceidratio":
+	case "always_on", "always_off", "traceidratio",
+		"parentbased_always_on", "parentbased_always_off", "parentbased_traceidratio":
 	default:
 		return fmt.Errorf("%s=%q is not a supported sampler", EnvSampler, c.Sampler)
 	}

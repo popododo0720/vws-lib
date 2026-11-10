@@ -76,7 +76,8 @@ func TestErrorDoesFourThingsOnce(t *testing.T) {
 		t.Fatalf("sentry captures: %d", len(c.captured))
 	}
 	tags := c.captured[0]
-	if tags["request_id"] != "req-9" || tags["resource_id"] != "vol-1" || tags["trace_id"] != span.SpanContext().TraceID().String() {
+	if tags["request_id"] != "req-9" || tags["resource_id"] != "vol-1" ||
+		tags["trace_id"] != span.SpanContext().TraceID().String() {
 		t.Errorf("tags: %v", tags)
 	}
 	ended := rec.Ended()
@@ -147,7 +148,8 @@ func TestSentryEventIsScrubbed(t *testing.T) {
 		t.Fatalf("InitSentry: %v", err)
 	}
 	cause := errors.New("call failed for account 123456789012: Authorization: Bearer abc.def.ghi " +
-		"Credential=AKIAEXAMPLE/20260101/ap-northeast-2/ec2/aws4_request, Signature=0123456789abcdef0123456789abcdef0123456789abcdef password=hunter2")
+		"Credential=AKIAEXAMPLE/20260101/ap-northeast-2/ec2/aws4_request, " +
+		"Signature=0123456789abcdef0123456789abcdef0123456789abcdef password=hunter2")
 	capture(t.Context(), errs.Internal(cause), map[string]string{"request_id": "req-1", "resource_id": "vol-1"})
 	flush(2 * time.Second)
 
@@ -157,7 +159,8 @@ func TestSentryEventIsScrubbed(t *testing.T) {
 	if all == "" {
 		t.Fatal("the fake Sentry received nothing")
 	}
-	for _, secret := range []string{"123456789012", "abc.def.ghi", "AKIAEXAMPLE", "0123456789abcdef0123456789abcdef", "hunter2"} {
+	secrets := []string{"123456789012", "abc.def.ghi", "AKIAEXAMPLE", "0123456789abcdef0123456789abcdef", "hunter2"}
+	for _, secret := range secrets {
 		if strings.Contains(all, secret) {
 			t.Errorf("the event still contains %q", secret)
 		}

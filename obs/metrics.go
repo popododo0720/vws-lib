@@ -115,7 +115,9 @@ func newMetrics(meter metric.Meter, service, version, commit string) (*Metrics, 
 	if err != nil {
 		errs = append(errs, err.Error())
 	}
-	m.queueOldestAge, err = meter.Float64ObservableGauge(MetricQueueOldestAge, metric.WithDescription("age of the oldest queue item"), metric.WithUnit("s"))
+	m.queueOldestAge, err = meter.Float64ObservableGauge(
+		MetricQueueOldestAge, metric.WithDescription("age of the oldest queue item"), metric.WithUnit("s"),
+	)
 	if err != nil {
 		errs = append(errs, err.Error())
 	}

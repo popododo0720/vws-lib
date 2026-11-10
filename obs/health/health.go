@@ -103,7 +103,9 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 
 // Serve listens on addr and serves h until the returned stop function is called. bound is the
 // address actually listened on (useful for ":0"). addr "" does nothing and returns a no-op stop.
-func Serve(ctx context.Context, addr string, h http.Handler) (bound string, stop func(context.Context) error, err error) {
+func Serve(
+	ctx context.Context, addr string, h http.Handler,
+) (bound string, stop func(context.Context) error, err error) {
 	if addr == "" {
 		return "", func(context.Context) error { return nil }, nil
 	}
