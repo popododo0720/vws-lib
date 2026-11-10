@@ -9,19 +9,19 @@ permissions: {}
 jobs:
   hygiene:
     if: github.event_name == 'pull_request'
-    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-pr-hygiene.yml@8e4f133d968b04c07e0b55799e23b11486417b54
+    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-pr-hygiene.yml@8cd0766f28cfa9342654207c1ea11f91c04598bb
     permissions: {contents: read, pull-requests: read, issues: read}
   gate:
     if: github.event_name == 'pull_request'
-    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-verify-gate.yml@8e4f133d968b04c07e0b55799e23b11486417b54
+    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-verify-gate.yml@8cd0766f28cfa9342654207c1ea11f91c04598bb
     permissions: {contents: read, pull-requests: read, issues: read}
   reset:
     if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
-    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-verify-reset.yml@8e4f133d968b04c07e0b55799e23b11486417b54
+    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-verify-reset.yml@8cd0766f28cfa9342654207c1ea11f91c04598bb
     permissions: {issues: write, pull-requests: write}
   rerun:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request
-    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-verify-rerun.yml@8e4f133d968b04c07e0b55799e23b11486417b54
+    uses: popododo0720/vws-deploy/.github/workflows/repo-guard-verify-rerun.yml@8cd0766f28cfa9342654207c1ea11f91c04598bb
     permissions: {actions: write, issues: write, pull-requests: write}
   # The required checks are bare names, and a called job reports as "caller / called", so shims carry them.
   pr-hygiene:
