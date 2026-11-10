@@ -21,7 +21,9 @@ type SentryOptions struct {
 
 // InitSentry starts sentry-go and returns the Capture function for Sink and a flush function.
 // With an empty DSN it returns nil, nil, nil: nothing is initialized.
-func InitSentry(o SentryOptions) (capture func(context.Context, error, map[string]string), flush func(time.Duration), err error) {
+func InitSentry(o SentryOptions) (
+	capture func(context.Context, error, map[string]string), flush func(time.Duration), err error,
+) {
 	if o.DSN == "" {
 		return nil, nil, nil
 	}

@@ -1,5 +1,4 @@
-# Common baseline: vws-deploy .github/golangci-common.yml (vws-deploy#300). Existing lll findings
-# are fixed in a follow-up; until then new-from-merge-base holds changed lines to the baseline.
+# Common baseline: vws-deploy .github/golangci-common.yml (vws-deploy#300).
 version: "2"
 linters:
   default: none
@@ -66,7 +65,6 @@ linters:
       - builtin$
       - examples$
 issues:
-  new-from-merge-base: origin/main
   max-issues-per-linter: 0
   max-same-issues: 0
 formatters:

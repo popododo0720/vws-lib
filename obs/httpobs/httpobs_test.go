@@ -68,7 +68,9 @@ func TestMiddleware(t *testing.T) {
 	}
 
 	rec = do("/boom", nil)
-	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "hunter2") || !strings.Contains(rec.Body.String(), "internal error") {
+	if rec.Code != http.StatusInternalServerError ||
+		strings.Contains(rec.Body.String(), "hunter2") ||
+		!strings.Contains(rec.Body.String(), "internal error") {
 		t.Errorf("panic: %d %q", rec.Code, rec.Body.String())
 	}
 

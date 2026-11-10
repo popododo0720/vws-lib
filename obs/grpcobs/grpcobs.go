@@ -137,7 +137,9 @@ func finish(ctx context.Context, service, method string, start time.Time, err er
 
 // UnaryServerInterceptor records, reports, and recovers for unary RPCs.
 func UnaryServerInterceptor(service string) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+	return func(
+		ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler,
+	) (resp any, err error) {
 		start := time.Now()
 		field := ""
 		if r, ok := req.(requestIDField); ok {
@@ -200,7 +202,10 @@ func outgoingRequestID(ctx context.Context, req any) string {
 // UnaryClientInterceptor sends the request id and records vws.rpc.client.duration. The error is
 // returned as it came; callers convert it with errs.FromGRPC.
 func UnaryClientInterceptor(service, peer string) grpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	return func(
+		ctx context.Context, method string, req, reply any,
+		cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption,
+	) error {
 		start := time.Now()
 		if id := outgoingRequestID(ctx, req); id != "" {
 			ctx = metadata.AppendToOutgoingContext(ctx, RequestIDHeader, id)

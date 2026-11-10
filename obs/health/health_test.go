@@ -36,7 +36,10 @@ func TestReadyzRunsChecksAndHidesErrorText(t *testing.T) {
 	h.Register("kube-api", func(context.Context) error { return errors.New("token=SECRET") })
 	h.Register("store", func(context.Context) error { return nil })
 	code, body := get(t, h, "/readyz")
-	if code != http.StatusServiceUnavailable || !strings.Contains(body, "kube-api") || strings.Contains(body, "SECRET") || strings.Contains(body, "store") {
+	if code != http.StatusServiceUnavailable ||
+		!strings.Contains(body, "kube-api") ||
+		strings.Contains(body, "SECRET") ||
+		strings.Contains(body, "store") {
 		t.Errorf("failing check: %d %s", code, body)
 	}
 }

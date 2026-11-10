@@ -45,7 +45,8 @@ func setup(t *testing.T, vars map[string]string, extra ...obs.Option) (*bytes.Bu
 	if err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
-	t.Cleanup(func() { _ = shutdown(context.Background()) }) //nolint:errcheck // second call after the test body, error is not the subject
+	//nolint:errcheck // second call after the test body, error is not the subject
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
 	return &buf, shutdown
 }
 
@@ -89,28 +90,37 @@ func TestConfigPrecedenceAndValidation(t *testing.T) {
 	if err := run(map[string]string{}); err != nil {
 		t.Fatal(err)
 	}
-	if got.Service != "storage" || got.Exporting() || got.TracesExporter != "none" || got.Protocol != "grpc" || got.LogFormat != "json" {
+	if got.Service != "storage" || got.Exporting() || got.TracesExporter != "none" ||
+		got.Protocol != "grpc" || got.LogFormat != "json" {
 		t.Errorf("defaults: %+v", got)
 	}
 	if got.SamplerArg != 0.1 || got.Sampler != "parentbased_traceidratio" {
 		t.Errorf("sampler defaults: %v %v", got.Sampler, got.SamplerArg)
 	}
 
-	if err := run(map[string]string{"OTEL_SERVICE_NAME": "from-env", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://c:4317", "VWS_LOG_LEVEL": "debug"}); err != nil {
+	if err := run(map[string]string{
+		"OTEL_SERVICE_NAME":           "from-env",
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://c:4317",
+		"VWS_LOG_LEVEL":               "debug",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if got.Service != "from-env" || !got.Exporting() || got.TracesExporter != "otlp" || got.LogLevel != slog.LevelDebug {
 		t.Errorf("env must beat ForService and turn exporters on: %+v", got)
 	}
 
-	if err := run(map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://c:4317", "OTEL_SDK_DISABLED": "true"}); err != nil {
+	if err := run(map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://c:4317",
+		"OTEL_SDK_DISABLED":           "true",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if got.Exporting() {
 		t.Errorf("OTEL_SDK_DISABLED must turn exporting off")
 	}
 
-	if err := run(map[string]string{"VWS_LOG_LEVEL": "debug"}, obs.WithOverride(func(c *obs.Config) { c.LogLevel = slog.LevelError })); err != nil {
+	override := obs.WithOverride(func(c *obs.Config) { c.LogLevel = slog.LevelError })
+	if err := run(map[string]string{"VWS_LOG_LEVEL": "debug"}, override); err != nil {
 		t.Fatal(err)
 	}
 	if got.LogLevel != slog.LevelError {
@@ -382,7 +392,8 @@ func TestMetricsNamesAndLabels(t *testing.T) {
 			t.Errorf("metric %s was not exported", name)
 		}
 		for _, k := range got[name] {
-			for _, banned := range []string{"resource_id", "request_id", "trace_id", "ip", "user", "account", "error", "message"} {
+			bannedLabels := []string{"resource_id", "request_id", "trace_id", "ip", "user", "account", "error", "message"}
+			for _, banned := range bannedLabels {
 				if k == banned {
 					t.Errorf("metric %s has banned label %s", name, k)
 				}
@@ -406,7 +417,10 @@ func TestForbiddenLabelPanics(t *testing.T) {
 	for name, fn := range map[string]func(){
 		"resource_id": func() { obs.Attrs("resource_id", "vol-1") },
 		"odd":         func() { obs.Attrs(oddArgs()...) },
-		"counter":     func() { c, _ := obs.M().NewCounter("vws.x", ""); c.Add(context.Background(), 1, "request_id", "r") }, //nolint:errcheck // name is valid
+		"counter": func() {
+			c, _ := obs.M().NewCounter("vws.x", "") //nolint:errcheck // name is valid
+			c.Add(context.Background(), 1, "request_id", "r")
+		},
 		"histogram": func() {
 			h, _ := obs.M().NewHistogram("vws.y", "", "s") //nolint:errcheck // name is valid
 			h.Record(context.Background(), 1, "request_id", "r")
@@ -543,7 +557,11 @@ func TestOTLPHTTPExportsAllThreeSignals(t *testing.T) {
 func TestNothingIsSentWithoutEndpointOrWhenDisabled(t *testing.T) {
 	recv := newReceiver(t)
 	for name, vars := range map[string]map[string]string{
-		"disabled":    {"OTEL_EXPORTER_OTLP_ENDPOINT": recv.srv.URL, "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf", "OTEL_SDK_DISABLED": "true"},
+		"disabled": {
+			"OTEL_EXPORTER_OTLP_ENDPOINT": recv.srv.URL,
+			"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+			"OTEL_SDK_DISABLED":           "true",
+		},
 		"no endpoint": {},
 	} {
 		_, shutdown := setup(t, vars)
