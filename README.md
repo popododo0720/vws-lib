@@ -12,6 +12,7 @@ Status: `obs` and `errs` are implemented (vws-deploy#44 item a). Not yet in: the
 | `obs/report` | `report.Error` and `report.Panic`: span error, log line, `vws.errors`, and Sentry when `SENTRY_DSN` is set. An error is reported once (`errs.Reported`). The only package that imports sentry-go. |
 | `obs/grpcobs`, `obs/httpobs` | Server and client instrumentation, panic recovery, request id, `vws.rpc.*` and `vws.http.*` metrics. |
 | `obs/health` | `/healthz` (checks nothing), `/readyz` (registered checks, fails after `NotReady` or SIGTERM). Telemetry backends cannot be registered. |
+| `lincheck` | Test helper: records a concurrent history of store operations and checks it is linearizable against a sequential model with porcupine. Usage in `docs/lincheck.md`. |
 | `errs` | Error codes and kinds shared by services, with the gRPC and AWS code mappings. It reuses the `resource.Code` and `resource.Kind` set of vws-console-api rather than adding a new taxonomy. |
 
 This module never imports vws-proto or any service repository. The dependency points one way: service to lib.

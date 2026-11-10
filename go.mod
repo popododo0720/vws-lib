@@ -5,6 +5,7 @@ go 1.26.0
 toolchain go1.26.9
 
 require (
+	github.com/anishathalye/porcupine v1.3.1
 	github.com/getsentry/sentry-go v0.50.0
 	github.com/getsentry/sentry-go/otel v0.50.0
 	github.com/prometheus/client_golang v1.25.0
