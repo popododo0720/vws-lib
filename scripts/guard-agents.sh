@@ -24,8 +24,7 @@
 #                                           the pull request is verify-approved for HEAD: LABELS (comma list) has
 #                                           verify-approved and a comment in the text (FILE or $PR_TEXT) has a
 #                                           "Verified-by: vws-verify" section naming HEAD with evidence for every
-#                                           QUALITY.md item, plus a "Codex review: <full path or URL> blocking=0"
-#                                           line. Each comment starts with a "@@comment-by: LOGIN" line;
+#                                           QUALITY.md item. Each comment starts with a "@@comment-by: LOGIN" line;
 #                                           text outside a comment (such as the PR body) never counts
 #   guard-agents.sh english [ALLOWLIST]     no tracked file has Hangul unless a glob in ALLOWLIST (default
 #                                           .github/english-allowlist, lines "<glob> <reason>") covers it
@@ -156,22 +155,8 @@ cmd_verify_gate() {
     fi ||
       die "verify-gate: the Verified-by section for ${head:0:12} has no evidence (URL, path or 'N/A: reason') for checklist item ${n}"
   done
-  # The same section carries the Codex review: "Codex review: <absolute path or http(s) URL> blocking=<N>".
-  # It passes only with blocking=0. Path rule: /workspace/handoff/codex/<repo>-<pr>-<sha7>.md.
-  local codex where blocking
-  codex=$(grep -m1 -E '^[[:space:]]*(- )?Codex review:' <<<"$section" || true)
-  [[ -n $codex ]] || die "verify-gate: no Codex review in the Verified-by section for ${head:0:12}; add 'Codex review: <full path or URL> blocking=<N>'"
-  codex=${codex#*Codex review:}
-  # blocking=<N> is matched as a string, never as bash arithmetic: $((N)) wraps 2^64 to 0, so only
-  # all-zero digits pass; empty, signed, hex, spaced or other non-digit values are rejected.
-  [[ $codex =~ blocking=([^[:space:]]*)[[:space:]]*$ ]] || die "verify-gate: the Codex review line needs 'blocking=<N>' at the end: ${codex}"
-  blocking=${BASH_REMATCH[1]}
-  where=${codex%blocking=*}
-  where=$(sed -E 's/[[:space:]]+$//; s/^[[:space:]]+//' <<<"$where")
-  [[ $where =~ ^(/[^[:space:]]+|https?://[^[:space:]/]+[^[:space:]]*)$ ]] ||
-    die "verify-gate: Codex review needs a full path or URL (an absolute /... path or an http(s) URL), got '${where}'"
-  [[ $blocking =~ ^[0-9]+$ ]] || die "verify-gate: Codex review blocking=<N> must be decimal digits, got '${blocking}' (${where})"
-  [[ $blocking =~ ^0+$ ]] || die "verify-gate: Codex review has ${blocking} blocking findings (${where})"
+  # No review line is required (owner, 2026-11-11): Kodus reviews every push on the PR itself, and the factory
+  # posts PASS only when no critical or high Kodus finding is open on the head.
 }
 
 # The one guard command for the architecture test: the Judgment count line comes first so the CI log
@@ -1189,8 +1174,7 @@ GH
   h1=$(printf 'a%.0s' {1..40}); h2=$(printf 'b%.0s' {1..40})
   ev="$tmp/ev.md"
   { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h1}"
-    for ((i = 1; i <= QUALITY_ITEMS; i++)); do echo "${i}. https://example.invalid/log/${i}"; done
-    echo "Codex review: /workspace/handoff/codex/vws-deploy-1-aaaaaaa.md blocking=0"; } >"$ev"
+    for ((i = 1; i <= QUALITY_ITEMS; i++)); do echo "${i}. https://example.invalid/log/${i}"; done; } >"$ev"
   expect_pass "label and evidence for the head" cmd_verify_gate "$h1" "bug,${VERIFY_LABEL}" "$ev"
   expect_fail "no label" cmd_verify_gate "$h1" "bug" "$ev"
   expect_fail "a push after approval (new head)" cmd_verify_gate "$h2" "$VERIFY_LABEL" "$ev"
@@ -1204,37 +1188,10 @@ GH
   sed 's#^7\. .*#7. N/A:#' "$ev" >"$tmp/evna2.md"
   expect_fail "N/A without a reason" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/evna2.md"
   expect_fail "no section" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/nohead.md"
-  # Codex review line: required, a full path or URL, and blocking=0.
-  local msg
-  grep -v 'Codex review:' "$ev" >"$tmp/nocodex.md"
-  expect_fail "no Codex review line" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/nocodex.md"
-  msg=$( (cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/nocodex.md") 2>&1 >/dev/null || true)
-  [[ $msg == *"no Codex review"* ]] || die "selftest: no Codex review line gave '${msg}'"
-  sed 's#blocking=0#blocking=2#' "$ev" >"$tmp/codex2.md"
-  expect_fail "a Codex review with blocking=2" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codex2.md"
-  msg=$( (cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codex2.md") 2>&1 >/dev/null || true)
-  [[ $msg == *"Codex review has 2 blocking findings"* ]] || die "selftest: blocking=2 gave '${msg}'"
-  echo "ok: blocking=2 names the count"
-  sed 's#^Codex review: .*#Codex review: https://example.invalid/codex/vws-deploy-1-aaaaaaa.md blocking=0#' "$ev" >"$tmp/codexurl.md"
-  expect_pass "a Codex review with blocking=0 (path)" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$ev"
-  expect_pass "a Codex review with blocking=0 (URL)" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexurl.md"
-  sed 's#^Codex review: .*#Codex review: blocking=0#' "$ev" >"$tmp/codexnopath.md"
-  expect_fail "a Codex review without a path or URL" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexnopath.md"
-  msg=$( (cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexnopath.md") 2>&1 >/dev/null || true)
-  [[ $msg == *"Codex review needs a full path or URL"* ]] || die "selftest: no path gave '${msg}'"
-  sed 's#^Codex review: .*#Codex review: codex/vws-deploy-1-aaaaaaa.md blocking=0#' "$ev" >"$tmp/codexrel.md"
-  expect_fail "a Codex review with a relative path" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexrel.md"
-  # blocking=<N> is a string match: only all-zero digits pass, no bash arithmetic (2^64 wrapped to 0).
-  local bv i=0
-  for bv in 18446744073709551616 -0 -1 '' abc 0x0 ' 0' 1; do
-    i=$((i + 1))
-    sed "s#blocking=0#blocking=${bv}#" "$ev" >"$tmp/codexbad$i.md"
-    expect_fail "a Codex review with blocking='${bv}'" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexbad$i.md"
-  done
-  sed 's#blocking=0#blocking=00#' "$ev" >"$tmp/codex00.md"
-  expect_pass "a Codex review with blocking=00" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codex00.md"
-  sed 's#^Codex review: .*#Codex review: /workspace/handoff/codex/vws-deploy-1-aaaaaaa.md#' "$ev" >"$tmp/codexnon.md"
-  expect_fail "a Codex review without blocking=<N>" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexnon.md"
+  # No review line is needed; an old "Codex review:" or "Kodus review:" line in a verdict is just text.
+  { cat "$ev"; echo "Codex review: https://example.invalid/pr/1 blocking=3"; } >"$tmp/oldline.md"
+  expect_pass "a verdict without a review line" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$ev"
+  expect_pass "an old review line is ignored" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/oldline.md"
   { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h2}"; echo "1. stale"; cat "$ev"; } >"$tmp/two.md"
   # Several sections name the head: the newest (last) one is the verdict (vws-deploy guard P2).
   { cat "$ev"; echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h1}"; echo "1. withdrawn"; } >"$tmp/newbad.md"
