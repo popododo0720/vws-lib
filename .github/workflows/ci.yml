@@ -31,6 +31,10 @@ jobs:
           fetch-depth: 0
       - name: guard-agents.sh rejects bad inputs
         run: scripts/guard-agents.sh selftest
+      - name: tests draw only from seeded sources
+        run: scripts/check-test-rand.sh
+      - name: check-test-rand.sh rejects unseeded randomness
+        run: scripts/check-test-rand_test.sh
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
